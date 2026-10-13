@@ -761,7 +761,9 @@ async function autoPlan($: any, e: any): Promise<string | 'drop' | null> {
   } catch {
     /* logging is best effort */
   }
-  return L.planContext(plan, { clean }) + extra
+  // Unity projects only; other projects get the same text as before
+  const unity = await $.fs.exists('ProjectSettings/ProjectVersion.txt').catch(() => false)
+  return L.planContext(plan, { clean, unity }) + extra
 }
 
 // Learn more: a pane of its own with an explanation written for the tip. The text lives in session state only:

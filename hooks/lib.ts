@@ -1,6 +1,6 @@
 // Pure logic of Command Deck: no engine calls, so every function here is unit-testable.
 
-import { finalPass, guidelineExtras } from './guidelines'
+import { finalPass, guidelineExtras, UNITY_RULES } from './guidelines'
 import type { CtxPart, GitInfo, Plan, Savings, Status, Task, Tier } from '../types'
 
 export const TIER_MODEL: Record<Tier, string> = {
@@ -269,7 +269,7 @@ export function isWorthAttaching(plan: Plan): boolean {
 }
 
 /** clean (default on) adds the step-specific engineering rules and the final pass; the always-on core rides in the system prompt. */
-export function planContext(plan: Plan, opts: { clean?: boolean } = {}): string {
+export function planContext(plan: Plan, opts: { clean?: boolean; unity?: boolean } = {}): string {
   const clean = opts.clean !== false
   const steps = plan.tasks.map(
     (t, i) => `${i + 1}. [${TIER_LABEL[t.tier]}${t.parallel ? ' ∥' : ''}] ${t.title}`,
@@ -280,6 +280,7 @@ export function planContext(plan: Plan, opts: { clean?: boolean } = {}): string 
     'Steps:',
     ...steps,
     'How to run it: Sonnet and Opus steps you do yourself. Every [Haiku] step MUST go to its own subagent with model "haiku", never done in this chat: give it only the step title, the exact file or spot to change and the done condition, no project history. Start all ∥ Haiku steps in one message so they run at once, but only if they edit different files; steps on the same file go one after another. Read-heavy searching goes to an Explore subagent. Long builds and test runs go in the background. After each subagent returns, check its edit by reading the changed spot or running the existing checks. Report which steps ran on Haiku, which ran in parallel, and any failure.',
+    ...(opts.unity ? [UNITY_RULES] : []),
     ...(clean ? [guidelineExtras(plan)].filter(Boolean) : []),
     ...(clean && plan.tasks.length > 1 ? [finalPass(plan)] : []),
   ].join('\n')

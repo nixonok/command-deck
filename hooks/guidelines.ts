@@ -126,3 +126,15 @@ export function finalPass(plan: Plan): string {
     '- Remaining risks and unverified parts are stated.',
   ].join('\n')
 }
+
+/** Unity projects only. Subagents see nothing but their prompt, so the main agent must paste this into each C# subagent's prompt. */
+export const UNITY_RULES = [
+  'Unity C# rules (paste into the prompt of every subagent that writes or edits C#; apply to new and edited code only, never decide by asking):',
+  '- References: [SerializeField] private fields linked in the prefab or scene. No GetComponent, AddComponent, GetChild, Find*, FindObjectOfType or Camera.main; if one is unavoidable, do it once in Awake or Start and cache it.',
+  '- Hot paths (Update, FixedUpdate, LateUpdate, OnGUI): no lookups, LINQ, string concat or new collections. Use events, not polling. Look up by key with Dictionary or HashSet.',
+  '- Pool anything spawned or shown repeatedly (reuse inactive instances, deactivate instead of Destroy). Spawned-from-code things are prefabs.',
+  '- Names: serialized mUpperCamel, private _lowerCamel, locals lowerCamel, enum members ALL_UPPER, bools is/can/has, callbacks on...Callback, type suffixes Go/Trans/Cg/Image/Button/Text/Tween.',
+  '- Methods start with a verb. Guard clauses first as one-line if-return. No var. One LINQ call per line. Comment only a non-obvious why.',
+  '- DOTween: every tween gets .SetLink(gameObject); Sequence only to chain several tweens; timers are a stored DOVirtual.DelayedCall, killed before rescheduling and in teardown.',
+  '- Mark nullable things [CanBeNull] (JetBrains.Annotations).',
+].join('\n')

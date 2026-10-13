@@ -235,3 +235,9 @@ test('token saved: a tool shows as unavailable only when it is not connected and
   expect(L.toolAvailable('caveman', servers, 0, 0)).toBe(false)
   expect(L.toolAvailable('caveman', servers, undefined, 0)).toBe(true)
 })
+
+test('Unity rules ride in the plan only for Unity projects', () => {
+  const plan = { isClear: true, questions: [], prompt: 'x', tasks: [{ title: 'a', tier: 'sonnet' as const, why: '', parallel: false }] }
+  expect(L.planContext(plan)).not.toContain('SerializeField')
+  expect(L.planContext(plan, { unity: true })).toContain('SerializeField')
+})
