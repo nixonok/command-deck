@@ -51,16 +51,6 @@ Or load it every time. Add to `~/.claude/settings.json` (absolute path or `~/...
 { "env": { "CLAUDE_CODE_PLUGIN_DIRS": "~/command-deck" } }
 ```
 
-### 3. From npm
-
-npm works as a plugin source inside a marketplace entry. Add an entry like this to your own `marketplace.json`:
-
-```json
-{ "name": "command-deck", "source": { "source": "npm", "package": "@mohaimin/command-deck", "version": "^1.0.0" } }
-```
-
-Then `/plugin install command-deck@your-marketplace`. Claude Code does not install a bare npm package by name, so the marketplace entry is required.
-
 After any install, run `/reload-plugins` (or start a new chat). The pane opens by itself, or open it with `/command-deck`.
 
 ## Use
@@ -148,7 +138,7 @@ Savings rows for Graft and token-optimizer show only if those MCP servers are in
 
 ## Versioning
 
-Semantic versioning. The version lives in `.claude-plugin/plugin.json` and is mirrored in `package.json`. Bump both on every release. A user only receives an update when the version changes.
+Semantic versioning. The version lives in `.claude-plugin/plugin.json`. Bump it on every release. A user only receives an update when the version changes.
 
 ## Publishing (maintainers)
 
