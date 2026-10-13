@@ -58,7 +58,8 @@ export type Limits = {
 
 export type Learn = { tip: string; text: string; isLoading: boolean; isSaved: boolean }
 
-export type Draft = { choice?: string; text: string }
+/** An answer being written: `text` is what was added with Enter, `typing` the line in the field, `rev` remounts the field after each add. */
+export type Draft = { choice?: string; text: string; typing?: string; rev?: number }
 
 export type Hist = { at: number; title: string; tier: Tier; status: string; tokens: number }
 
@@ -81,6 +82,7 @@ declare module 'claude-code' {
       auto: boolean
       learn: Learn | null
       draft: Record<string, Draft>
+      answered: boolean
       min: Record<string, boolean>
       order: string[] | null
       history: Hist[]

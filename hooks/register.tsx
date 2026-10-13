@@ -22,6 +22,7 @@ const autoA = atom({ plugin: 'command-deck', key: 'auto' } as const, true)
 const cleanA = atom({ plugin: 'command-deck', key: 'clean' } as const, true)
 const learnA = atom({ plugin: 'command-deck', key: 'learn' } as const, null as Learn | null)
 const draftA = atom({ plugin: 'command-deck', key: 'draft' } as const, {} as Record<string, Draft>)
+const answeredA = atom({ plugin: 'command-deck', key: 'answered' } as const, false)
 const histA = atom({ plugin: 'command-deck', key: 'history' } as const, [] as Hist[])
 const orderA = atom({ plugin: 'command-deck', key: 'order' } as const, null as string[] | null)
 const minA = atom({ plugin: 'command-deck', key: 'min' } as const, {} as Record<string, boolean>)
@@ -299,6 +300,7 @@ async function runPlan($: any, ask: string, answers: string[]): Promise<string> 
   const plan = await analyze($, ask, answers)
   if (!plan) return 'Could not build a plan from that. Say it again with the file or feature named.'
   if (!plan.isClear) {
+    await update($, answeredA, () => false)
     await update($, pendingA, () => ({ ask, answers, questions: plan.questions }))
     await save($)
     return ['A few questions first (answer with /command-deck-plan <your answers>):', ...plan.questions.map((q, i) => `  ${i + 1}. ${q}`)].join('\n')
@@ -611,10 +613,11 @@ async function sendAnswers($: any) {
   const draft = await read($, draftA)
   const lines = pending.questions.map((q, i) => {
     const d = draft[String(i)]
-    const parts = [d?.choice, d?.text?.trim()].filter(Boolean)
+    const parts = [d?.choice, [d?.text, d?.typing].filter(Boolean).join(' ').trim()].filter(Boolean)
     return `${i + 1}. ${q} ${parts.length ? parts.join(' - ') : '(no answer)'}`
   })
   await update($, draftA, () => ({}))
+  await update($, answeredA, () => true)
   fromPanel = true
   await $.prompt.submit({ text: lines.join('\n') })
 }
@@ -627,6 +630,7 @@ async function dismissQuestions($: any) {
 
 async function skipQuestions($: any) {
   await update($, draftA, () => ({}))
+  await update($, answeredA, () => true)
   fromPanel = true
   await $.prompt.submit({ text: 'go' })
 }
@@ -661,6 +665,7 @@ async function autoPlan($: any, e: any): Promise<string | 'drop' | null> {
   }
   // one round of questions at most: a reply to them is always enough to go on
   if (!plan.isClear && !pending && plan.questions.length) {
+    await update($, answeredA, () => false)
     await update($, pendingA, () => ({ ask, answers, questions: plan.questions.slice(0, 2) }))
     await save($)
     remember('User', text)
@@ -1051,7 +1056,7 @@ export const register: Register = (on, options) => {
   // ------------------------------------------------------------ the pane
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Text, Button } = $.ui.resolve(e)
-    const [tasks, usage, savings, cave, clean, git, limits, frame, tip, goal, auto, pending, draft, mins, savedOrder, hist] = await Promise.all([
+    const [tasks, usage, savings, cave, clean, git, limits, frame, tip, goal, auto, pending, draft, mins, savedOrder, hist, answered] = await Promise.all([
       read($, tasksA),
       read($, usageA),
       read($, savingsA),
@@ -1068,6 +1073,7 @@ export const register: Register = (on, options) => {
       read($, minA),
       read($, orderA),
       read($, histA).catch(() => [] as Hist[]),
+      read($, answeredA),
     ])
     const Input = ($.ui.resolve(e) as any).Input as ((p: Record<string, unknown>) => any) | undefined
     const now = await $.clock.now()
@@ -1309,7 +1315,7 @@ export const register: Register = (on, options) => {
     // ---------------- questions: replaces the board until they are answered
     const setDraft = (i: number, patch: Partial<Draft>) =>
       update($, draftA, (d: Record<string, Draft>) => ({ ...d, [String(i)]: { text: '', ...d[String(i)], ...patch } }))
-    const questionsWin = pending
+    const questionsWin = pending && !answered
       ? win(
           '?',
           'BETTER PROMPT',
@@ -1332,19 +1338,19 @@ export const register: Register = (on, options) => {
                     ))}
                   </Box>
                   {Input ? (
-                  <Input
-                    key={`q${i}-text`}
-                    label=""
-                    placeholder="type your own answer…"
-                    value={d?.text ?? ''}
-                    submitLabel="save"
-                    onInput={(v: string) => void setDraft(i, { text: v })}
-                    onSubmit={(v: string) => void setDraft(i, { text: v })}
-                  />
+                    <Input
+                      key={`q${i}-text-${d?.rev ?? 0}`}
+                      label=""
+                      placeholder="type your own answer, Enter adds it…"
+                      value={d?.typing ?? ''}
+                      submitLabel="add"
+                      onInput={(v: string) => void setDraft(i, { typing: v })}
+                      onSubmit={(v: string) => void setDraft(i, { text: [d?.text, v.trim()].filter(Boolean).join(' '), typing: '', rev: (d?.rev ?? 0) + 1 })}
+                    />
                   ) : null}
-                  {d?.text ? (
+                  {d?.text || d?.typing ? (
                     <Text wrap="wrap" dimColor>
-                      {d.text}
+                      {[d?.text, d?.typing].filter(Boolean).join(' ')}
                     </Text>
                   ) : null}
                 </Box>
