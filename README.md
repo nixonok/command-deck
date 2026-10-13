@@ -144,6 +144,14 @@ Semantic versioning. The version lives in `.claude-plugin/plugin.json`. Bump it 
 
 See [PUBLISHING.md](PUBLISHING.md).
 
+## Feedback and contributing
+
+Command Deck was built in one sitting, so there are rough edges. Feedback, corrections, additions and improvements are welcome. Anyone can open an issue or send a pull request.
+
+- Found a bug or have an idea: [open an issue](https://github.com/nixonok/command-deck/issues/new/choose).
+- Want to change the code: read [CONTRIBUTING.md](CONTRIBUTING.md). It covers the steps and the two checks every pull request must pass (`claude plugin test .` and `claude plugin validate . --strict`).
+- Every pull request is reviewed by the maintainer before merging.
+
 ## License
 
 MIT. See [LICENSE](LICENSE).
