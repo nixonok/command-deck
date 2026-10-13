@@ -208,3 +208,19 @@ test('guidelines: core stays small and sections are picked per step and tier', (
   expect(L.planContext(arch, { clean: false })).not.toContain('Extra engineering rules')
   console.log(JSON.stringify(picks), G.guidelineExtras(arch).split(/\s+/).length, 'words')
 })
+
+test('each tier has its own one-cell working animation that loops', () => {
+  const tiers = ['opus', 'sonnet', 'haiku']
+  const seqs = tiers.map(t => Array.from({ length: 12 }, (_, f) => L.tierSpinner(t, f)))
+  expect(new Set(seqs.map(s => s.join(''))).size).toBe(3)
+  expect(seqs.flat().every(c => [...c].length === 1)).toBe(true)
+  expect(tiers.every(t => L.tierSpinner(t, 0) !== L.tierSpinner(t, 1))).toBe(true)
+  expect(L.tierSpinner('opus', -3)).toBe(L.tierSpinner('opus', 3))
+})
+
+test('Handoff+/Clean only compacts unless Auto Clean is on, and asks before clearing', () => {
+  expect(L.cleanStep(false, false)).toBe('compact')
+  expect(L.cleanStep(true, false)).toBe('ask')
+  expect(L.cleanStep(true, true)).toBe('wait')
+  expect(L.cleanStep(false, true)).toBe('wait')
+})

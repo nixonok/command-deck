@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="400" viewBox="0 0 1280 400" role="img" aria-label="Command Deck: plan, route, save tokens">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0b1020"/>
+      <stop offset="1" stop-color="#1b1140"/>
+    </linearGradient>
+    <linearGradient id="bar" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#22d3ee"/>
+      <stop offset="1" stop-color="#a855f7"/>
+    </linearGradient>
+  </defs>
+  <rect width="1280" height="400" rx="24" fill="url(#bg)"/>
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, monospace">
+    <rect x="80" y="70" width="520" height="260" rx="14" fill="#0f172a" stroke="#22d3ee" stroke-width="2"/>
+    <text x="104" y="104" fill="#22d3ee" font-size="18" font-weight="700">◆ COMMAND DECK</text>
+    <text x="104" y="142" fill="#e2e8f0" font-size="16">⠋ [Sonnet] Add Auto Clean</text>
+    <text x="104" y="172" fill="#e2e8f0" font-size="16">● [Opus]   Review diff</text>
+    <text x="104" y="202" fill="#e2e8f0" font-size="16">▅ [Haiku]  Rename label</text>
+    <text x="104" y="232" fill="#64748b" font-size="16">○ [Haiku]  Run tests</text>
+    <text x="104" y="272" fill="#94a3b8" font-size="14">context</text>
+    <rect x="180" y="259" width="380" height="14" rx="7" fill="#1e293b"/>
+    <rect x="180" y="259" width="170" height="14" rx="7" fill="url(#bar)"/>
+    <text x="104" y="306" fill="#94a3b8" font-size="14">saved ≈ 1.2M tokens</text>
+  </g>
+  <g font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif">
+    <text x="660" y="170" fill="#ffffff" font-size="64" font-weight="800">Command Deck</text>
+    <text x="662" y="218" fill="#c4b5fd" font-size="26">Plan it. Route it. Keep the context lean.</text>
+    <text x="662" y="262" fill="#94a3b8" font-size="20">A Claude Code mod for tokens, models and handoffs.</text>
+  </g>
+</svg>

@@ -1,3 +1,5 @@
+<p align="center"><img src="assets/cover.svg" alt="Command Deck: plan it, route it, keep the context lean" width="100%"></p>
+
 # Command Deck
 
 A Claude Code mod that plans work, sends each task to the cheapest model that can do it, and keeps a live board of usage, git state and handoffs.
@@ -36,6 +38,24 @@ It is my one-shot attempt to put most of what I know about saving tokens and cos
 - **Cache guard and keep-warm.** Warns before an expensive cold-cache rewrite and can ping to keep the cache warm.
 - **Smart tool deferral.** Moves MCP servers the work does not need behind tool search.
 - **Savings counter.** Estimated tokens and dollars saved.
+
+### The pane
+
+The header holds the switches. Press one before a prompt; the choice is remembered.
+
+<p align="center"><img src="assets/header.png" alt="Command Deck header buttons: Caveman, Clean code, Auto-plan, Handoff+/Clean, Auto Clean, Reset layout" width="420"></p>
+
+The board follows the plan. A card moves to DOING when work starts and to DONE when it ends.
+
+<p align="center"><img src="assets/board.png" alt="Kanban board with TODO, DOING and DONE lanes, each task tagged Haiku or Sonnet" width="420"></p>
+
+Usage shows the 5-hour and weekly limits, a context bar split by what fills it, and the cache state.
+
+<p align="center"><img src="assets/usage.png" alt="Usage panel with limits, context breakdown and cache status" width="420"></p>
+
+The savings counter estimates what Graft, the optimizer, caveman mode and Command Deck itself kept out of the context.
+
+<p align="center"><img src="assets/savings.png" alt="Token saved today panel with estimated tokens and dollars per source" width="420"></p>
 
 ## Install
 
@@ -83,6 +103,7 @@ After any install, run `/reload-plugins` (or start a new chat). The pane opens b
 | `/command-deck-cave [on\|off]` | Caveman mode |
 | `/command-deck clean [on\|off]` | Clean code rules |
 | `/command-deck auto [on\|off]` | Auto-plan every message |
+| `/command-deck autoclean [on\|off]` | Handoff+/Clean clears the chat after you confirm; off (default) only compacts |
 | `/command-deck run` | Run the open tasks, each on its own model |
 | `/command-deck fresh` | Handoff, then a new chat |
 | `/command-deck handoff` · `compact` | Write a handoff note · compact the chat |
@@ -90,7 +111,7 @@ After any install, run `/reload-plugins` (or start a new chat). The pane opens b
 | `/command-deck warm [on\|off] [hours]` | Keep the prompt cache warm |
 | `/command-deck tools [on\|off]` | Smart MCP tool deferral |
 
-The pane header has buttons for Caveman, Clean code and Auto-plan. Press them before a prompt to switch the feature on or off. The choice is remembered.
+The pane header has buttons for Caveman, Clean code, Auto-plan, Handoff+/Clean, Auto Clean and Reset layout. The first three and Auto Clean switch a feature on or off, so press them before a prompt; the choice is remembered. Handoff+/Clean writes a handoff, then compacts the chat. With Auto Clean on, it asks before it clears the chat.
 
 ## How clean code picks rules
 

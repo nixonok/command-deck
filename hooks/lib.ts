@@ -167,6 +167,16 @@ export function barColor(pct: number): string {
 export const SPINNER = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']
 export const spinner = (frame: number): string => SPINNER[Math.abs(frame) % SPINNER.length] ?? '·'
 
+// one single-cell animation per model tier so a glance tells who is working: Opus pulses, Sonnet spins, Haiku bounces
+const PULSE = ['·', '•', '●', '•']
+const BOUNCE = ['▁', '▃', '▅', '▇', '▅', '▃']
+export function tierSpinner(tier: string, frame: number): string {
+  const f = Math.abs(frame)
+  if (tier === 'opus') return PULSE[f % PULSE.length] ?? '·'
+  if (tier === 'haiku') return BOUNCE[f % BOUNCE.length] ?? '▁'
+  return spinner(f)
+}
+
 export function compact(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
   if (n >= 1_000) return `${(n / 1_000).toFixed(n >= 10_000 ? 0 : 1)}k`
@@ -477,3 +487,8 @@ export function parseNeed(raw: string): string[] | null {
 }
 
 export const serverOfTool = (tool: string): string | null => /^mcp__(.+?)__/.exec(tool)?.[1] ?? null
+
+// what Handoff+/Clean does after the handoff is written: wait while a question is open, ask before clearing,
+// or (Auto Clean off, the default) only compact
+export type CleanStep = 'wait' | 'ask' | 'compact'
+export const cleanStep = (autoClean: boolean, isAsking: boolean): CleanStep => (isAsking ? 'wait' : autoClean ? 'ask' : 'compact')

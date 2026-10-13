@@ -20,7 +20,11 @@ const frameA = atom({ plugin: 'command-deck', key: 'frame' } as const, 0)
 const tipA = atom({ plugin: 'command-deck', key: 'tip' } as const, 0)
 const autoA = atom({ plugin: 'command-deck', key: 'auto' } as const, true)
 const cleanA = atom({ plugin: 'command-deck', key: 'clean' } as const, true)
-const autoCleanA = atom({ plugin: 'command-deck', key: 'autoClean' } as const, true)
+// Auto Clean is opt-in: off means Handoff+/Clean only compacts; the choice is stored and survives restarts
+const autoCleanA = atom({ plugin: 'command-deck', key: 'autoClean' } as const, false)
+// a clean waiting for the person's yes or skip; the handoff is already written when this is set
+type CleanAsk = { path: string; first: string; carry?: string; shed: number }
+const cleanAskA = atom({ plugin: 'command-deck', key: 'cleanAsk' } as const, null as CleanAsk | null)
 const learnA = atom({ plugin: 'command-deck', key: 'learn' } as const, null as Learn | null)
 const draftA = atom({ plugin: 'command-deck', key: 'draft' } as const, {} as Record<string, Draft>)
 const answeredA = atom({ plugin: 'command-deck', key: 'answered' } as const, false)
@@ -124,7 +128,7 @@ async function load($: any) {
   const cleanStored = await $.store.get('deck.clean')
   const clean = cleanStored === undefined ? true : Boolean(cleanStored)
   const autoCleanStored = await $.store.get('deck.autoClean')
-  const autoClean = autoCleanStored === undefined ? true : Boolean(autoCleanStored)
+  const autoClean = autoCleanStored === undefined ? false : Boolean(autoCleanStored)
   const autoStored = await $.store.get('deck.auto')
   const auto = autoStored === undefined ? true : Boolean(autoStored)
   const usage = ((await $.store.get(await todayKey($))) as Record<string, number> | undefined) ?? {}
@@ -537,6 +541,7 @@ async function setCave($: any, value?: boolean): Promise<boolean> {
 // A new chat that already knows where things stand: write the handoff, clear the conversation, and send the
 // first prompt of the fresh chat for the person.
 async function fresh($: any, carry?: string): Promise<string> {
+  if (L.cleanStep(await read($, autoCleanA), Boolean(await read($, cleanAskA))) === 'wait') return 'Waiting for your answer: clean the chat or only compact (buttons in the deck).'
   $.ui.toast('Writing the handoff…')
   const shed = (await read($, limitsA)).ctxTokens ?? 0
   const note = await handoff($)
@@ -544,27 +549,57 @@ async function fresh($: any, carry?: string): Promise<string> {
   const first = carry
     ? `Read ${path} for context from the previous chat. Then do this:\n\n${carry}`
     : `Read ${path} and continue with the first open task.`
-  // Auto Clean off: keep the chat, only compact it (the handoff file is already written)
-  if (!(await read($, autoCleanA))) {
-    try {
-      await $.session.compact({ instructions: `Keep: the goal, the open tasks and any decision already made. Handoff: ${path}` })
-      if (carry) await $.prompt.submit({ text: carry })
-      return `Handoff written to ${path}. Chat compacted.`
-    } catch (err) {
-      return `Handoff written to ${path}, but compact failed (${String((err as Error)?.message ?? err)}).`
-    }
+  // the handoff holds the findings of this chat; list it in the history so it can be found later
+  await addHistory($, `Handoff saved: ${path}`, shed)
+  const ask: CleanAsk = { path, first, carry, shed }
+  // Auto Clean off: never clear, only compact. On: clear only after the person says yes in the deck.
+  if (L.cleanStep(await read($, autoCleanA), false) === 'compact') return runCompact($, ask)
+  await update($, cleanAskA, () => ask)
+  $.ui.toast('Handoff saved. Clean the chat? Choose in the deck.')
+  return `Handoff saved to ${path}. Choose in the deck: Clean now, or Skip to only compact.`
+}
+
+async function addHistory($: any, title: string, tokens: number) {
+  try {
+    const now = await $.clock.now()
+    const next = [...(await read($, histA)), { at: now, title, tier: 'sonnet' as const, status: 'handoff', tokens }].slice(-200)
+    await update($, histA, () => next)
+    await $.store.set('deck.history', next)
+  } catch {
+    /* history is a convenience */
   }
+}
+
+async function runCompact($: any, ask: CleanAsk): Promise<string> {
+  try {
+    await $.session.compact({ instructions: `Keep: the goal, the open tasks and any decision already made. Handoff: ${ask.path}` })
+    if (ask.carry) await $.prompt.submit({ text: ask.carry })
+    return `Handoff written to ${ask.path}. Chat compacted.`
+  } catch (err) {
+    return `Handoff written to ${ask.path}, but compact failed (${String((err as Error)?.message ?? err)}).`
+  }
+}
+
+async function runClean($: any, ask: CleanAsk): Promise<string> {
   try {
     await $.command.run({ command: 'clear', args: '' })
-    await addSaving('fresh', shed, $)
+    await addSaving('fresh', ask.shed, $)
     deferServers = new Set()
     usedServers.clear()
-    await $.prompt.submit({ text: first })
-    return `Fresh chat started from ${path}.`
+    await $.prompt.submit({ text: ask.first })
+    return `Fresh chat started from ${ask.path}.`
   } catch (err) {
-    await $.prompt.fill({ text: first, mode: 'replace' }).catch(() => undefined)
-    return `Handoff written to ${path}, but the chat could not be cleared for you (${String((err as Error)?.message ?? err)}). Run /clear, then send what is in the prompt box.`
+    await $.prompt.fill({ text: ask.first, mode: 'replace' }).catch(() => undefined)
+    return `Handoff written to ${ask.path}, but the chat could not be cleared for you (${String((err as Error)?.message ?? err)}). Run /clear, then send what is in the prompt box.`
   }
+}
+
+// the person's answer to the clean question: yes clears, skip falls back to compact
+async function answerClean($: any, isYes: boolean): Promise<string> {
+  const ask = await read($, cleanAskA)
+  if (!ask) return 'Nothing to confirm.'
+  await update($, cleanAskA, () => null)
+  return isYes ? runClean($, ask) : runCompact($, ask)
 }
 
 let isAutoBoard = false
@@ -1084,13 +1119,14 @@ export const register: Register = (on, options) => {
   // ------------------------------------------------------------ the pane
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Text, Button } = $.ui.resolve(e)
-    const [tasks, usage, savings, cave, clean, autoClean, git, limits, frame, tip, goal, auto, pending, draft, mins, savedOrder, hist, answered] = await Promise.all([
+    const [tasks, usage, savings, cave, clean, autoClean, cleanAsk, git, limits, frame, tip, goal, auto, pending, draft, mins, savedOrder, hist, answered] = await Promise.all([
       read($, tasksA),
       read($, usageA),
       read($, savingsA),
       read($, caveA),
       read($, cleanA),
       read($, autoCleanA),
+      read($, cleanAskA),
       read($, gitA),
       read($, limitsA),
       read($, frameA),
@@ -1209,6 +1245,15 @@ export const register: Register = (on, options) => {
           <Button key="autoclean" label={autoClean ? '✓ Auto Clean ON' : '○ Auto Clean off'} onPress={() => setAutoClean($)} />
           <Button key="reset-layout" label="↺ Reset layout" onPress={resetLayout} />
         </Box>
+        {cleanAsk ? (
+          <Box gap={1} flexWrap="wrap">
+            <Text color="yellow" bold>
+              Handoff saved. Clean the chat?
+            </Text>
+            <Button key="clean-yes" label="✓ Clean now" onPress={() => void answerClean($, true).then(t => $.ui.toast(t))} />
+            <Button key="clean-skip" label="⇢ Skip, compact only" onPress={() => void answerClean($, false).then(t => $.ui.toast(t))} />
+          </Box>
+        ) : null}
       </Box>
     )
 
@@ -1294,7 +1339,7 @@ export const register: Register = (on, options) => {
     const colW = twoUp ? Math.max(12, Math.floor((inner - 4) / 3) - 4) : inner - 2
     const card = (t: Task) => {
       const tierColor = L.TIER_COLOR[t.tier]
-      const icon = t.status === 'doing' ? L.spinner(frame) : t.status === 'done' ? '✔' : t.status === 'failed' ? '✖' : '○'
+      const icon = t.status === 'doing' ? L.tierSpinner(t.tier, frame) : t.status === 'done' ? '✔' : t.status === 'failed' ? '✖' : '○'
       const iconColor = t.status === 'done' ? 'green' : t.status === 'failed' ? 'red' : t.status === 'doing' ? tierColor : 'gray'
       return (
         <Text key={`card-${t.id}`} wrap="wrap">
