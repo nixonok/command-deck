@@ -30,7 +30,10 @@ const draftA = atom({ plugin: 'command-deck', key: 'draft' } as const, {} as Rec
 const answeredA = atom({ plugin: 'command-deck', key: 'answered' } as const, false)
 const histA = atom({ plugin: 'command-deck', key: 'history' } as const, [] as Hist[])
 const orderA = atom({ plugin: 'command-deck', key: 'order' } as const, null as string[] | null)
-const minA = atom({ plugin: 'command-deck', key: 'min' } as const, {} as Record<string, boolean>)
+// Git and History start minimized; the person can open them and the choice is kept
+const minA = atom({ plugin: 'command-deck', key: 'min' } as const, { GIT: true, HISTORY: true } as Record<string, boolean>)
+// History shows the newest 15 entries; true shows every stored entry
+const histAllA = atom({ plugin: 'command-deck', key: 'historyAll' } as const, false)
 const LEARN = 'command-deck-learn'
 const CHOICES = ['Yes', 'No', 'Not sure']
 let fromPanel = false
@@ -97,7 +100,7 @@ async function save($: any) {
   }
 }
 
-const DEFAULT_ORDER = ['BOARD', 'USAGE', 'MODELS', 'SAVED', 'GIT', 'TIPS', 'BRIEF', 'HISTORY']
+const DEFAULT_ORDER = ['BOARD', 'BRIEF', 'USAGE', 'MODELS', 'SAVED', 'GIT', 'TIPS', 'HISTORY']
 
 // the saved order, healed: unknown ids dropped, new ids appended, so an old layout never hides a section
 function fullOrder(saved: string[] | null): string[] {
@@ -1119,7 +1122,7 @@ export const register: Register = (on, options) => {
   // ------------------------------------------------------------ the pane
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Text, Button } = $.ui.resolve(e)
-    const [tasks, usage, savings, cave, clean, autoClean, cleanAsk, git, limits, frame, tip, goal, auto, pending, draft, mins, savedOrder, hist, answered] = await Promise.all([
+    const [tasks, usage, savings, cave, clean, autoClean, cleanAsk, git, limits, frame, tip, goal, auto, pending, draft, mins, histAll, savedOrder, hist, answered] = await Promise.all([
       read($, tasksA),
       read($, usageA),
       read($, savingsA),
@@ -1136,6 +1139,7 @@ export const register: Register = (on, options) => {
       read($, pendingA),
       read($, draftA),
       read($, minA),
+      read($, histAllA),
       read($, orderA),
       read($, histA).catch(() => [] as Hist[]),
       read($, answeredA),
@@ -1487,23 +1491,29 @@ export const register: Register = (on, options) => {
     // ---------------- savings
     const inPrice = opt('inputDollarsPerMTok', 3)
     const outPrice = opt('outputDollarsPerMTok', 15)
-    const saveRow = (label: string, tokens: number, price: number, color: string) => (
-      <Text wrap="truncate-end">
-        <Text dimColor>{label.padEnd(11)}</Text>
-        <Text color={color} bold>
-          {L.compact(tokens).padStart(6)}
+    const saveRow = (label: string, tokens: number, price: number, color: string, available = true) =>
+      available ? (
+        <Text wrap="truncate-end">
+          <Text dimColor>{label.padEnd(11)}</Text>
+          <Text color={color} bold>
+            {L.compact(tokens).padStart(6)}
+          </Text>
+          <Text dimColor>{`  tokens  ≈ $${((tokens * price) / 1_000_000).toFixed(2)}`}</Text>
         </Text>
-        <Text dimColor>{`  tokens  ≈ $${((tokens * price) / 1_000_000).toFixed(2)}`}</Text>
-      </Text>
-    )
+      ) : (
+        <Text wrap="truncate-end" dimColor>
+          {label.padEnd(11)}
+          {'not available'}
+        </Text>
+      )
     const savingsWin = win(
       '✚',
       'TOKEN SAVED TODAY',
       'yellow',
       [
-        saveRow('Graft', savings.graft, inPrice, 'green'),
-        saveRow('Optimizer', savings.optimizer, inPrice, 'cyan'),
-        saveRow('Caveman', savings.caveman, outPrice, 'yellow'),
+        saveRow('Graft', savings.graft, inPrice, 'green', L.toolAvailable('graft', limits.servers, limits.skillTokens, savings.graft)),
+        saveRow('Optimizer', savings.optimizer, inPrice, 'cyan', L.toolAvailable('optimizer', limits.servers, limits.skillTokens, savings.optimizer)),
+        saveRow('Caveman', savings.caveman, outPrice, 'yellow', L.toolAvailable('caveman', limits.servers, limits.skillTokens, savings.caveman)),
         saveRow('CMD Deck', L.deckSaved(savings), inPrice, 'magenta'),
       ],
       `≈ $${L.dollars(savings, inPrice, outPrice).toFixed(2)} est.`,
@@ -1570,11 +1580,11 @@ export const register: Register = (on, options) => {
           'HISTORY',
           'green',
           <Box flexDirection="column">
-            {[...hist].reverse().slice(0, 15).map((it, i) => (
+            {[...hist].reverse().slice(0, histAll ? hist.length : 15).map((it, i) => (
               <Text key={`h-${i}-${it.at}`} wrap="wrap">
                 <Text dimColor>{stamp(it.at)} </Text>
-                <Text color={it.status === 'done' ? 'green' : 'red'} bold>
-                  {it.status === 'done' ? '✔' : '✖'}{' '}
+                <Text color={it.status === 'failed' ? 'red' : 'green'} bold>
+                  {it.status === 'failed' ? '✖' : it.status === 'handoff' ? '⇢' : '✔'}{' '}
                 </Text>
                 <Text color={L.TIER_COLOR[it.tier]} bold>
                   [{L.TIER_LABEL[it.tier]}]{' '}
@@ -1582,8 +1592,13 @@ export const register: Register = (on, options) => {
                 <Text>{it.title}</Text>
               </Text>
             ))}
+            {hist.length > 15 ? (
+              <Box>
+                <Button key="hist-all" label={histAll ? '－ Show latest 15' : `＋ Show whole history (${hist.length})`} onPress={() => void update($, histAllA, (v: boolean) => !v)} />
+              </Box>
+            ) : null}
           </Box>,
-          hist.length > 15 ? `15 of ${hist.length}` : `${hist.length}`,
+          hist.length > 15 ? `${histAll ? hist.length : 15} of ${hist.length}` : `${hist.length}`,
           'HISTORY',
         )
       : null

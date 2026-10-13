@@ -224,3 +224,14 @@ test('Handoff+/Clean only compacts unless Auto Clean is on, and asks before clea
   expect(L.cleanStep(true, true)).toBe('wait')
   expect(L.cleanStep(false, true)).toBe('wait')
 })
+
+test('token saved: a tool shows as unavailable only when it is not connected and saved nothing', () => {
+  const servers = [{ server: 'graft' }, { server: 'other' }]
+  expect(L.toolAvailable('graft', servers, 5, 0)).toBe(true)
+  expect(L.toolAvailable('optimizer', servers, 5, 0)).toBe(false)
+  expect(L.toolAvailable('optimizer', servers, 5, 900)).toBe(true)
+  expect(L.toolAvailable('optimizer', [{ server: 'token-optimizer' }], 5, 0)).toBe(true)
+  expect(L.toolAvailable('graft', undefined, undefined, 0)).toBe(true)
+  expect(L.toolAvailable('caveman', servers, 0, 0)).toBe(false)
+  expect(L.toolAvailable('caveman', servers, undefined, 0)).toBe(true)
+})

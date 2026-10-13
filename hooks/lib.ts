@@ -212,6 +212,22 @@ export function cavemanSaved(outputTokens: number, ratio: number): number {
   return Math.round((outputTokens * r) / (1 - r))
 }
 
+// A tool counts as available when its MCP server is connected or it already saved something. With no server data yet
+// we assume available, so a missing breakdown never shows a false "not available". Caveman is a skill with no install
+// signal, so it reads as missing only when the chat loaded no skills at all and nothing was saved.
+export const toolAvailable = (
+  tool: 'graft' | 'optimizer' | 'caveman',
+  servers: { server: string }[] | undefined,
+  skillTokens: number | undefined,
+  saved: number,
+): boolean => {
+  if (saved > 0) return true
+  if (tool === 'caveman') return skillTokens === undefined || skillTokens > 0
+  if (!servers) return true
+  const want = tool === 'graft' ? 'graft' : 'token_optimizer'
+  return servers.some(sv => norm(sv.server) === want)
+}
+
 export const ZERO_SAVINGS: Savings = { graft: 0, optimizer: 0, caveman: 0, keepwarm: 0, fresh: 0, routing: 0, tools: 0 }
 
 // everything Command Deck saved, one figure: keep-warm, fresh chat, routing and tool deferral
@@ -273,7 +289,7 @@ export const HOUSE_SECTION = `Command Deck is active. Keep the main context smal
 
 // ---------------------------------------------------------------- caveman
 
-export const CAVEMAN_SECTION = `Caveman mode is ON: the person switched it on with the Command Deck toggle. Follow the caveman:caveman skill for every reply (load it if it is not loaded yet) until the person turns it off. If that skill is not installed: short sentences, small words, no filler, code and names unchanged.`
+export const CAVEMAN_SECTION = `Caveman mode is ON: the person switched it on with the Command Deck toggle. Before your first reply, load the caveman:caveman skill with the Skill tool if it is not loaded yet, then follow it for every reply until the person turns it off. Short, blunt sentences in every reply, including the first. If that skill is not installed: short sentences, small words, no filler, code and names unchanged.`
 
 // ---------------------------------------------------------------- files
 
