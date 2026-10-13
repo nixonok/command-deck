@@ -1,0 +1,14 @@
+{
+  "name": "command-deck-market",
+  "owner": {
+    "name": "nixonok"
+  },
+  "description": "Command Deck: model routing planner, kanban board and clean-code rules for Claude Code.",
+  "plugins": [
+    {
+      "name": "command-deck",
+      "source": "./",
+      "description": "Plan with the right model per task, kanban board, usage and git panel, caveman toggle, handoff memory."
+    }
+  ]
+}

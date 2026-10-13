@@ -1,0 +1,136 @@
+{
+  "name": "command-deck",
+  "version": "1.0.0",
+  "description": "Plan with the right model per task, kanban board, usage and git panel, caveman toggle, handoff memory.",
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "autoStart": {
+      "type": "number",
+      "title": "Auto-start the deck in every new chat (1 on, 0 off)",
+      "description": "When on, each new chat opens the Command Deck pane and turns auto-plan on. When off, open it yourself with /deck.",
+      "default": 1
+    },
+    "autoCompactPct": {
+      "type": "number",
+      "title": "Auto-compact at context % (only when auto handoff is off)",
+      "description": "Compact instead of handing off. Used only if the handoff percent is 0. 0 turns it off.",
+      "default": 0
+    },
+    "autoFresh": {
+      "type": "number",
+      "title": "Move to a new chat on a new topic (1 on, 0 off)",
+      "description": "When a long chat gets a message that starts a new topic, write a handoff, clear the chat and send the message there. 0 only suggests it.",
+      "default": 1
+    },
+    "handoffTurns": {
+      "type": "number",
+      "title": "Suggest a handoff after N prompts",
+      "description": "After this many prompts, a prompt that starts a new feature gets a handoff suggestion. 0 turns it off.",
+      "default": 12
+    },
+    "cavemanRatio": {
+      "type": "number",
+      "title": "Caveman output saving (0 to 0.9)",
+      "description": "Share of output tokens Caveman mode is assumed to spare. Used only for the saved estimate.",
+      "default": 0.35
+    },
+    "optimizerTokensPerCall": {
+      "type": "number",
+      "title": "Context optimizer saving per call",
+      "description": "Estimated tokens spared by each token-optimizer smart_* call (it does not report its own).",
+      "default": 1200
+    },
+    "inputDollarsPerMTok": {
+      "type": "number",
+      "title": "Input price, dollars per million tokens",
+      "description": "Used to turn saved input tokens into dollars.",
+      "default": 3
+    },
+    "outputDollarsPerMTok": {
+      "type": "number",
+      "title": "Output price, dollars per million tokens",
+      "description": "Used to turn saved output tokens into dollars.",
+      "default": 15
+    },
+    "autoFreshPct": {
+      "type": "number",
+      "title": "Handoff and clear at context %",
+      "description": "When the context window passes this percent, write a handoff, clear the chat and continue from it. 0 turns it off.",
+      "default": 50
+    },
+    "coldGuard": {
+      "type": "number",
+      "title": "Cold-cache guard (0 off, 1 warn, 2 refuse)",
+      "description": "When the prompt cache has probably gone cold on a big context, show the rewrite cost. 2 also drops the first send once so you can choose.",
+      "default": 1
+    },
+    "cacheTtlMin": {
+      "type": "number",
+      "title": "Prompt cache lifetime, minutes",
+      "description": "60 for a subscription's one-hour cache. Use 5 for API-key billing unless promptCacheTtl is 1h.",
+      "default": 60
+    },
+    "coldMinTokens": {
+      "type": "number",
+      "title": "Minimum context for the guard and keep-warm",
+      "description": "Below this many tokens a cold rewrite is cheap, so nothing is done.",
+      "default": 50000
+    },
+    "autoKeepWarm": {
+      "type": "number",
+      "title": "Keep the cache warm automatically (1 on, 0 off)",
+      "description": "Turn keep-warm on once the context is big, and after a cold cache is detected.",
+      "default": 1
+    },
+    "warmPingMin": {
+      "type": "number",
+      "title": "Keep-warm ping after idle minutes",
+      "description": "One tool-less fork after this many idle minutes. Must be under the cache lifetime.",
+      "default": 50
+    },
+    "warmHours": {
+      "type": "number",
+      "title": "Keep-warm window, hours",
+      "description": "How long keep-warm stays on before it stops by itself.",
+      "default": 6
+    },
+    "smartTools": {
+      "type": "number",
+      "title": "Smart MCP deferral (1 on, 0 off)",
+      "description": "On a chat's first prompt, move MCP servers the work does not need behind tool search (still reachable on demand). /deck tools off undoes it.",
+      "default": 1
+    },
+    "routingSaveRatio": {
+      "type": "number",
+      "title": "Routing saving ratio",
+      "description": "Share of a Haiku task's tokens counted as saved against running it on Sonnet (price gap).",
+      "default": 0.67
+    },
+    "plannerChatMessages": {
+      "type": "number",
+      "title": "Recent messages shown to the planner",
+      "description": "How many of the latest chat messages the planner reads so it does not ask what the chat already settled. 0 sends none.",
+      "default": 5
+    },
+    "plannerChatChars": {
+      "type": "number",
+      "title": "Characters kept per message sent to the planner",
+      "description": "Longer messages are cut to this length before the planner sees them.",
+      "default": 500
+    }
+  },
+  "author": {
+    "name": "nixonok"
+  },
+  "homepage": "https://github.com/nixonok/command-deck",
+  "repository": "https://github.com/nixonok/command-deck",
+  "license": "MIT",
+  "keywords": [
+    "command-deck",
+    "planner",
+    "model-routing",
+    "kanban",
+    "caveman",
+    "clean-code"
+  ]
+}

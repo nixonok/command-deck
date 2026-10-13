@@ -1,0 +1,28 @@
+{
+  "name": "@nixonok/command-deck",
+  "version": "1.0.0",
+  "description": "Plan with the right model per task, kanban board, usage and git panel, caveman toggle, handoff memory.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nixonok/command-deck.git"
+  },
+  "files": [
+    ".claude-plugin",
+    "hooks",
+    "types",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "command-deck",
+    "planner",
+    "model-routing",
+    "kanban",
+    "caveman",
+    "clean-code"
+  ],
+  "publishConfig": {
+    "access": "public"
+  }
+}
