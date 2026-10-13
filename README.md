@@ -56,7 +56,7 @@ Or load it every time. Add to `~/.claude/settings.json` (absolute path or `~/...
 npm works as a plugin source inside a marketplace entry. Add an entry like this to your own `marketplace.json`:
 
 ```json
-{ "name": "command-deck", "source": { "source": "npm", "package": "@nixonok/command-deck", "version": "^1.0.0" } }
+{ "name": "command-deck", "source": { "source": "npm", "package": "@mohaimin/command-deck", "version": "^1.0.0" } }
 ```
 
 Then `/plugin install command-deck@your-marketplace`. Claude Code does not install a bare npm package by name, so the marketplace entry is required.

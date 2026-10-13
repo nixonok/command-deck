@@ -36,12 +36,12 @@ npm pack --dry-run        # check only .claude-plugin, hooks, types, README, LIC
 npm publish --access public
 ```
 
-The scoped name `@nixonok/command-deck` needs your npm username to be `nixonok` (or a matching org). If it differs, change `name` in `package.json`. `npm publish` cannot be undone for that version number, so run the dry run first.
+The scoped name `@mohaimin/command-deck` needs your npm username to be `mohaimin` (or a matching org). If it differs, change `name` in `package.json`. `npm publish` cannot be undone for that version number, so run the dry run first.
 
 Anyone can then reference it from a marketplace entry:
 
 ```json
-{ "name": "command-deck", "source": { "source": "npm", "package": "@nixonok/command-deck", "version": "^1.0.0" } }
+{ "name": "command-deck", "source": { "source": "npm", "package": "@mohaimin/command-deck", "version": "^1.0.0" } }
 ```
 
 Verify npm publishing steps against npm's own docs; Anthropic's docs cover only the install side.

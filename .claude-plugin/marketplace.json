@@ -1,7 +1,7 @@
 {
   "name": "command-deck-market",
   "owner": {
-    "name": "nixonok"
+    "name": "mohaimin"
   },
   "description": "Command Deck: model routing planner, kanban board and clean-code rules for Claude Code.",
   "plugins": [
