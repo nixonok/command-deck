@@ -63,6 +63,8 @@ Pick one.
 
 ### 1. From the marketplace (recommended)
 
+Type these at the prompt of a terminal `claude` session. The desktop app's Code tab answers that `/plugin` is not available; once installed from a terminal, the plugin loads there too.
+
 ```
 /plugin marketplace add nixonok/command-deck
 /plugin install command-deck@command-deck-market
