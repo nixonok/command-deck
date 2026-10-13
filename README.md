@@ -4,6 +4,27 @@ A Claude Code mod that plans work, sends each task to the cheapest model that ca
 
 Needs Claude Code 2.1.280 or later (mods, `CLAUDE_CODE_PLUGIN_DIRS`). MIT licensed.
 
+## Why I built this
+
+I used to chase every last token, and I kept accidentally using far too many. The routine had too many chores to remember:
+
+- run `/compact` or `/clear`
+- run the cleanup and skills passes
+- switch to a cheaper model for easy tasks
+- keep the prompt cache warm
+
+I would forget one, and context piled up. I often had no idea how full it was, and the numbers were spread over different tabs. Each habit also had extra steps I could skip.
+
+Command Deck puts it in one pane you can read at a glance:
+
+- context fill, daily token use and estimated savings
+- a plan with each step tagged Haiku, Sonnet or Opus
+- toggles for caveman replies, clean code and auto-plan
+- a Handoff+/Clean button, with Auto Clean to choose between clearing and only compacting
+- a warning before the cache goes cold, and a keep-warm ping
+
+It is my one-shot attempt to put most of what I know about saving tokens and cost into one tool, so nobody has to remember the routine. Feedback and fixes are welcome.
+
 ## Features
 
 - **Auto-plan.** Each message is checked. Big or vague ones are split into small steps, each tagged Haiku, Sonnet or Opus. Parallel steps are marked `∥`.
