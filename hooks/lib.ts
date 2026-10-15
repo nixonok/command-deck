@@ -505,7 +505,28 @@ export function parseNeed(raw: string): string[] | null {
 
 export const serverOfTool = (tool: string): string | null => /^mcp__(.+?)__/.exec(tool)?.[1] ?? null
 
-// what Handoff+/Clean does after the handoff is written: wait while a question is open, ask before clearing,
-// or (Auto Clean off, the default) only compact
-export type CleanStep = 'wait' | 'ask' | 'compact'
-export const cleanStep = (autoClean: boolean, isAsking: boolean): CleanStep => (isAsking ? 'wait' : autoClean ? 'ask' : 'compact')
+// what Handoff+/Clean does after the handoff is written: with Auto Clean on (the default) it clears the chat,
+// otherwise it only compacts
+export type CleanStep = 'clean' | 'compact'
+export const cleanStep = (autoClean: boolean): CleanStep => (autoClean ? 'clean' : 'compact')
+
+export const SMOKE_TITLE = 'Smoke test run: confirm the whole change works'
+// every plan ends with a smoke test run, so the board is not done until the work is checked
+export function withSmokeTask<T extends { title: string; tier: 'haiku' | 'sonnet' | 'opus'; why: string; parallel: boolean }>(tasks: T[]): (T | { title: string; tier: 'haiku'; why: string; parallel: boolean })[] {
+  if (tasks.some(t => /smoke/i.test(t.title))) return tasks
+  return [...tasks, { title: SMOKE_TITLE, tier: 'haiku', why: 'Run the project smoke test and report the result', parallel: false }]
+}
+
+// titles from a TodoWrite call that are not on the board yet (compared case-insensitively)
+export function newTodoTitles(todos: unknown, have: string[]): string[] {
+  if (!Array.isArray(todos)) return []
+  const seen = new Set(have.map(h => h.trim().toLowerCase()))
+  const out: string[] = []
+  for (const t of todos) {
+    const title = String((t as { content?: unknown })?.content ?? '').trim()
+    if (!title || seen.has(title.toLowerCase())) continue
+    seen.add(title.toLowerCase())
+    out.push(title)
+  }
+  return out
+}

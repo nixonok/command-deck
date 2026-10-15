@@ -218,11 +218,9 @@ test('each tier has its own one-cell working animation that loops', () => {
   expect(L.tierSpinner('opus', -3)).toBe(L.tierSpinner('opus', 3))
 })
 
-test('Handoff+/Clean only compacts unless Auto Clean is on, and asks before clearing', () => {
-  expect(L.cleanStep(false, false)).toBe('compact')
-  expect(L.cleanStep(true, false)).toBe('ask')
-  expect(L.cleanStep(true, true)).toBe('wait')
-  expect(L.cleanStep(false, true)).toBe('wait')
+test('Handoff+/Clean clears the chat when Auto Clean is on, otherwise only compacts', () => {
+  expect(L.cleanStep(true)).toBe('clean')
+  expect(L.cleanStep(false)).toBe('compact')
 })
 
 test('token saved: a tool shows as unavailable only when it is not connected and saved nothing', () => {

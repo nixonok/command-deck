@@ -75,6 +75,7 @@ declare module 'claude-code' {
       savings: Savings
       cave: boolean
       clean: boolean
+      autoClean: boolean
       git: GitInfo | null
       limits: Limits
       frame: number

@@ -105,7 +105,7 @@ After any install, run `/reload-plugins` (or start a new chat). The pane opens b
 | `/command-deck-cave [on\|off]` | Caveman mode |
 | `/command-deck clean [on\|off]` | Clean code rules |
 | `/command-deck auto [on\|off]` | Auto-plan every message |
-| `/command-deck autoclean [on\|off]` | Handoff+/Clean clears the chat after you confirm; off (default) only compacts |
+| `/command-deck autoclean [on\|off]` | Handoff+/Clean clears the chat (default, no question); off only compacts |
 | `/command-deck run` | Run the open tasks, each on its own model |
 | `/command-deck fresh` | Handoff, then a new chat |
 | `/command-deck handoff` · `compact` | Write a handoff note · compact the chat |
@@ -113,7 +113,7 @@ After any install, run `/reload-plugins` (or start a new chat). The pane opens b
 | `/command-deck warm [on\|off] [hours]` | Keep the prompt cache warm |
 | `/command-deck tools [on\|off]` | Smart MCP tool deferral |
 
-The pane header has buttons for Caveman, Clean code, Auto-plan, Handoff+/Clean, Auto Clean and Reset layout. The first three and Auto Clean switch a feature on or off, so press them before a prompt; the choice is remembered. Handoff+/Clean writes a handoff, then compacts the chat. With Auto Clean on, it asks before it clears the chat.
+The pane header has buttons for Caveman, Clean code, Auto-plan, Handoff+/Clean, Auto Clean and Reset layout. The first three and Auto Clean switch a feature on or off, so press them before a prompt; the choice is remembered. Handoff+/Clean writes a handoff, then clears the chat. With Auto Clean off, it only compacts.
 
 ## How clean code picks rules
 
@@ -140,7 +140,7 @@ Change a value in any of these ways:
 | `autoCompactPct` | 0 | Compact at this context % when handoff is off. |
 | `autoFresh` | 1 | Move to a new chat when a long chat starts a new topic. |
 | `handoffTurns` | 12 | Suggest a handoff after this many prompts. |
-| `plannerChatMessages` | 5 | Latest chat messages the planner reads. 0 sends none. |
+| `plannerChatMessages` | 8 | Latest chat messages the planner reads. 0 sends none. |
 | `plannerChatChars` | 500 | Characters kept per message sent to the planner. |
 | `autoStart` | 1 | Open the pane and enable auto-plan in every new chat. |
 | `coldGuard` | 1 | 0 off, 1 warn, 2 also hold the first send. |

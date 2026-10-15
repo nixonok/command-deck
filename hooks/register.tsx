@@ -6,7 +6,8 @@ import * as G from './guidelines'
 import type { CtxPart, CtxServer, Draft, GitInfo, Hist, Learn, Limits, Pending, Plan, Savings, Task } from '../types'
 
 const PANE = 'command-deck'
-const DIR = '.claude/deck'
+// absolute once load() has run: a relative path would follow the shell's working directory and scatter .claude folders through the project
+let DIR = '.claude/deck'
 
 const tasksA = atom({ plugin: 'command-deck', key: 'tasks' } as const, [] as Task[])
 const goalA = atom({ plugin: 'command-deck', key: 'goal' } as const, '')
@@ -20,11 +21,10 @@ const frameA = atom({ plugin: 'command-deck', key: 'frame' } as const, 0)
 const tipA = atom({ plugin: 'command-deck', key: 'tip' } as const, 0)
 const autoA = atom({ plugin: 'command-deck', key: 'auto' } as const, true)
 const cleanA = atom({ plugin: 'command-deck', key: 'clean' } as const, true)
-// Auto Clean is opt-in: off means Handoff+/Clean only compacts; the choice is stored and survives restarts
-const autoCleanA = atom({ plugin: 'command-deck', key: 'autoClean' } as const, false)
+// Auto Clean is on by default: off means Handoff+/Clean only compacts; the choice is stored and survives restarts
+const autoCleanA = atom({ plugin: 'command-deck', key: 'autoClean' } as const, true)
 // a clean waiting for the person's yes or skip; the handoff is already written when this is set
 type CleanAsk = { path: string; first: string; carry?: string; shed: number }
-const cleanAskA = atom({ plugin: 'command-deck', key: 'cleanAsk' } as const, null as CleanAsk | null)
 const learnA = atom({ plugin: 'command-deck', key: 'learn' } as const, null as Learn | null)
 const draftA = atom({ plugin: 'command-deck', key: 'draft' } as const, {} as Record<string, Draft>)
 const answeredA = atom({ plugin: 'command-deck', key: 'answered' } as const, false)
@@ -33,7 +33,6 @@ const orderA = atom({ plugin: 'command-deck', key: 'order' } as const, null as s
 // Git and History start minimized; the person can open them and the choice is kept
 const minA = atom({ plugin: 'command-deck', key: 'min' } as const, { GIT: true, HISTORY: true } as Record<string, boolean>)
 // History shows the newest 15 entries; true shows every stored entry
-const histAllA = atom({ plugin: 'command-deck', key: 'historyAll' } as const, false)
 const LEARN = 'command-deck-learn'
 const CHOICES = ['Yes', 'No', 'Not sure']
 let fromPanel = false
@@ -80,8 +79,41 @@ async function archive($: any) {
     const next = [...have, ...add].slice(-200)
     await update($, histA, () => next)
     await $.store.set('deck.history', next)
+    await appendHistoryFile($, add)
   } catch {
     /* history is a convenience */
+  }
+}
+
+// the full history (the store keeps only the latest 200) is appended to a file so it can be opened as a whole
+const histFile = () => `${DIR}/history.md`
+async function appendHistoryFile($: any, items: { at: number; title: string; tier: string; status: string }[]) {
+  try {
+    const prev = (await $.fs.exists(histFile())) ? String(await $.fs.read(histFile())) : '# Command Deck history\n\n'
+    const lines = items.map(h => `- ${new Date(h.at).toISOString().slice(0, 16).replace('T', ' ')} [${h.tier}] ${h.status}: ${h.title}`)
+    await $.fs.write(histFile(), `${prev.endsWith('\n') ? prev : `${prev}\n`}${lines.join('\n')}\n`)
+  } catch {
+    /* history is a convenience */
+  }
+}
+
+async function openHistoryFolder($: any) {
+  try {
+    if (!(await $.fs.exists(histFile()))) await $.fs.write(histFile(), '# Command Deck history\n')
+    const dir = DIR
+    // macOS, Linux, then Windows: the first opener that exits cleanly wins
+    let ok = false
+    for (const opener of ['open', 'xdg-open', 'explorer']) {
+      const r = await $.process.run([opener, dir]).catch(() => null)
+      if (r && (r.exitCode === 0 || opener === 'explorer')) {
+        ok = true
+        break
+      }
+    }
+    if (!ok) throw new Error('no folder opener found')
+    $.ui.toast('Opened the history folder')
+  } catch (err) {
+    $.ui.toast(`Could not open the folder: ${String((err as Error)?.message ?? err)}`)
   }
 }
 
@@ -120,6 +152,11 @@ async function todayKey($: any) {
 }
 
 async function load($: any) {
+  try {
+    DIR = `${String(await $.session.root()).replace(/\/$/, '')}/.claude/deck`
+  } catch {
+    /* keep the relative default */
+  }
   const tasks = ((await $.store.get('deck.tasks')) as Task[] | undefined) ?? []
   const goal = ((await $.store.get('deck.goal')) as string | undefined) ?? ''
   // questions are never carried into a new session: they would cling to the pane and ask what was answered
@@ -131,7 +168,7 @@ async function load($: any) {
   const cleanStored = await $.store.get('deck.clean')
   const clean = cleanStored === undefined ? true : Boolean(cleanStored)
   const autoCleanStored = await $.store.get('deck.autoClean')
-  const autoClean = autoCleanStored === undefined ? false : Boolean(autoCleanStored)
+  const autoClean = autoCleanStored === undefined ? true : Boolean(autoCleanStored)
   const autoStored = await $.store.get('deck.auto')
   const auto = autoStored === undefined ? true : Boolean(autoStored)
   const usage = ((await $.store.get(await todayKey($))) as Record<string, number> | undefined) ?? {}
@@ -317,7 +354,7 @@ async function runPlan($: any, ask: string, answers: string[]): Promise<string> 
     await save($)
     return ['A few questions first (answer with /command-deck-plan <your answers>):', ...plan.questions.map((q, i) => `  ${i + 1}. ${q}`)].join('\n')
   }
-  const tasks: Task[] = plan.tasks.map((t, i) => ({ id: i + 1, title: t.title, tier: t.tier, why: t.why, parallel: t.parallel, status: 'todo', tokens: 0 }))
+  const tasks: Task[] = L.withSmokeTask(plan.tasks).map((t, i) => ({ id: i + 1, title: t.title, tier: t.tier, why: t.why, parallel: t.parallel, status: 'todo', tokens: 0 }))
   await archive($)
   await update($, tasksA, () => tasks)
   await update($, goalA, () => plan.prompt)
@@ -544,7 +581,6 @@ async function setCave($: any, value?: boolean): Promise<boolean> {
 // A new chat that already knows where things stand: write the handoff, clear the conversation, and send the
 // first prompt of the fresh chat for the person.
 async function fresh($: any, carry?: string): Promise<string> {
-  if (L.cleanStep(await read($, autoCleanA), Boolean(await read($, cleanAskA))) === 'wait') return 'Waiting for your answer: clean the chat or only compact (buttons in the deck).'
   $.ui.toast('Writing the handoff…')
   const shed = (await read($, limitsA)).ctxTokens ?? 0
   const note = await handoff($)
@@ -555,19 +591,18 @@ async function fresh($: any, carry?: string): Promise<string> {
   // the handoff holds the findings of this chat; list it in the history so it can be found later
   await addHistory($, `Handoff saved: ${path}`, shed)
   const ask: CleanAsk = { path, first, carry, shed }
-  // Auto Clean off: never clear, only compact. On: clear only after the person says yes in the deck.
-  if (L.cleanStep(await read($, autoCleanA), false) === 'compact') return runCompact($, ask)
-  await update($, cleanAskA, () => ask)
-  $.ui.toast('Handoff saved. Clean the chat? Choose in the deck.')
-  return `Handoff saved to ${path}. Choose in the deck: Clean now, or Skip to only compact.`
+  // Auto Clean off: never clear, only compact. On: clear straight away, no question.
+  return L.cleanStep(await read($, autoCleanA)) === 'compact' ? runCompact($, ask) : runClean($, ask)
 }
 
 async function addHistory($: any, title: string, tokens: number) {
   try {
     const now = await $.clock.now()
-    const next = [...(await read($, histA)), { at: now, title, tier: 'sonnet' as const, status: 'handoff', tokens }].slice(-200)
+    const entry = { at: now, title, tier: 'sonnet' as const, status: 'handoff', tokens }
+    const next = [...(await read($, histA)), entry].slice(-200)
     await update($, histA, () => next)
     await $.store.set('deck.history', next)
+    await appendHistoryFile($, [entry])
   } catch {
     /* history is a convenience */
   }
@@ -595,14 +630,6 @@ async function runClean($: any, ask: CleanAsk): Promise<string> {
     await $.prompt.fill({ text: ask.first, mode: 'replace' }).catch(() => undefined)
     return `Handoff written to ${ask.path}, but the chat could not be cleared for you (${String((err as Error)?.message ?? err)}). Run /clear, then send what is in the prompt box.`
   }
-}
-
-// the person's answer to the clean question: yes clears, skip falls back to compact
-async function answerClean($: any, isYes: boolean): Promise<string> {
-  const ask = await read($, cleanAskA)
-  if (!ask) return 'Nothing to confirm.'
-  await update($, cleanAskA, () => null)
-  return isYes ? runClean($, ask) : runCompact($, ask)
 }
 
 let isAutoBoard = false
@@ -640,7 +667,7 @@ function remember(role: string, text: string | undefined, max = opt('plannerChat
   const t = String(text ?? '').replace(/\s+/g, ' ').trim()
   if (!t) return
   recent.push(`${role}: ${t.length > max ? `${t.slice(0, max)}…` : t}`)
-  while (recent.length > Math.max(0, opt('plannerChatMessages', 5))) recent.shift()
+  while (recent.length > Math.max(0, opt('plannerChatMessages', 8))) recent.shift()
 }
 const HUMAN = new Set(['composer', 'bridge', 'sdk'])
 
@@ -740,7 +767,7 @@ async function autoPlan($: any, e: any): Promise<string | 'drop' | null> {
     await save($)
     return pending ? `Answers to the earlier questions are in this message. Original request: ${pending.ask}` : null
   }
-  const tasks: Task[] = plan.tasks.map((t, i) => ({ id: i + 1, title: t.title, tier: t.tier, why: t.why, parallel: t.parallel, status: 'todo', tokens: 0 }))
+  const tasks: Task[] = L.withSmokeTask(plan.tasks).map((t, i) => ({ id: i + 1, title: t.title, tier: t.tier, why: t.why, parallel: t.parallel, status: 'todo', tokens: 0 }))
   await archive($)
   await update($, tasksA, () => tasks)
   await update($, goalA, () => plan.prompt)
@@ -1027,6 +1054,23 @@ export const register: Register = (on, options) => {
     if (isAutoBoard && !isRunning && !(e as { agentId?: string }).agentId && mainTask === null && agentTask.size === 0 && tool !== 'Agent') {
       mainTask = await beginTask($, null)
     }
+    // TodoWrite sends the whole list; TaskCreate (newer Claude Code) sends one task as `subject`
+    if (tool === 'TodoWrite' || tool === 'TaskCreate') {
+      try {
+        const input = (e as { input?: { todos?: unknown; subject?: unknown } }).input
+        const listed = tool === 'TaskCreate' ? [{ content: input?.subject }] : input?.todos
+        const add = L.newTodoTitles(listed, (await read($, tasksA)).map(t => t.title))
+        if (add.length) {
+          await update($, tasksA, (l: Task[]) => [
+            ...l,
+            ...add.map((title, i) => ({ id: Math.max(0, ...l.map(x => x.id)) + i + 1, title, tier: 'sonnet' as const, why: 'Found while working', parallel: false, status: 'todo' as const, tokens: 0 })),
+          ])
+          await save($)
+        }
+      } catch {
+        /* the board follows the plan even if a todo list cannot be read */
+      }
+    }
     const srv = L.serverOfTool(tool)
     if (srv) {
       usedServers.add(L.norm(srv))
@@ -1071,12 +1115,18 @@ export const register: Register = (on, options) => {
         await endTask($, id)
       }
     } else if (isAutoBoard && !isRunning) {
-      isAutoBoard = false
-      stopSpin()
-      agentTask.clear()
-      mainTask = null
-      await update($, tasksA, (l: Task[]) => l.map(t => (t.status === 'doing' || t.status === 'todo' ? { ...t, status: 'done' as const } : t)))
-      await writeProgress($)
+      // a card is done only when its work ran: close what was doing; cards never started stay todo so the board
+      // never claims more than happened (the spinner stops when none is left)
+      if (agentTask.size === 0) {
+        mainTask = null
+        const now = await $.clock.now()
+        await update($, tasksA, (l: Task[]) => l.map(t => (t.status === 'doing' ? { ...t, status: 'done' as const, endedAt: now } : t)))
+        if (!(await read($, tasksA)).some(t => t.status === 'todo')) {
+          isAutoBoard = false
+          stopSpin()
+        }
+        await writeProgress($)
+      }
     }
     if (!e.agentId && usage && (await read($, caveA))) {
       await addSaving('caveman', L.cavemanSaved(usage.output_tokens ?? 0, opt('cavemanRatio', 0.35)), $)
@@ -1124,14 +1174,13 @@ export const register: Register = (on, options) => {
   // ------------------------------------------------------------ the pane
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Text, Button } = $.ui.resolve(e)
-    const [tasks, usage, savings, cave, clean, autoClean, cleanAsk, git, limits, frame, tip, goal, auto, pending, draft, mins, histAll, savedOrder, hist, answered] = await Promise.all([
+    const [tasks, usage, savings, cave, clean, autoClean, git, limits, frame, tip, goal, auto, pending, draft, mins, savedOrder, hist, answered] = await Promise.all([
       read($, tasksA),
       read($, usageA),
       read($, savingsA),
       read($, caveA),
       read($, cleanA),
       read($, autoCleanA),
-      read($, cleanAskA),
       read($, gitA),
       read($, limitsA),
       read($, frameA),
@@ -1141,7 +1190,6 @@ export const register: Register = (on, options) => {
       read($, pendingA),
       read($, draftA),
       read($, minA),
-      read($, histAllA),
       read($, orderA),
       read($, histA).catch(() => [] as Hist[]),
       read($, answeredA),
@@ -1251,15 +1299,6 @@ export const register: Register = (on, options) => {
           <Button key="autoclean" label={autoClean ? '✓ Auto Clean ON' : '○ Auto Clean off'} onPress={() => setAutoClean($)} />
           <Button key="reset-layout" label="↺ Reset layout" onPress={resetLayout} />
         </Box>
-        {cleanAsk ? (
-          <Box gap={1} flexWrap="wrap">
-            <Text color="yellow" bold>
-              Handoff saved. Clean the chat?
-            </Text>
-            <Button key="clean-yes" label="✓ Clean now" onPress={() => void answerClean($, true).then(t => $.ui.toast(t))} />
-            <Button key="clean-skip" label="⇢ Skip, compact only" onPress={() => void answerClean($, false).then(t => $.ui.toast(t))} />
-          </Box>
-        ) : null}
       </Box>
     )
 
@@ -1281,14 +1320,14 @@ export const register: Register = (on, options) => {
     const used = segs.reduce((n, x) => n + x.cells, 0)
     const ctxBar = segs.length ? (
       <Text wrap="truncate-end">
-        <Text dimColor>{'Context'.padEnd(10)}</Text>
+        <Text dimColor>{'Context'.padEnd(9)}</Text>
+        <Text bold>{`${limits.ctxPct.toFixed(0)}%`.padStart(4)} </Text>
         {segs.map(x => (
           <Text key={`seg-${x.name}`} color={x.color}>
             {'█'.repeat(x.cells)}
           </Text>
         ))}
         <Text dimColor>{'░'.repeat(Math.max(0, 30 - used))}</Text>
-        <Text bold>{` ${limits.ctxPct.toFixed(0)}%`}</Text>
         <Text dimColor>{` ${ctxTail}`}</Text>
       </Text>
     ) : null
@@ -1514,7 +1553,6 @@ export const register: Register = (on, options) => {
       'yellow',
       [
         saveRow('Graft', savings.graft, inPrice, 'green', L.toolAvailable('graft', limits.servers, limits.skillTokens, savings.graft)),
-        saveRow('Optimizer', savings.optimizer, inPrice, 'cyan', L.toolAvailable('optimizer', limits.servers, limits.skillTokens, savings.optimizer)),
         saveRow('Caveman', savings.caveman, outPrice, 'yellow', L.toolAvailable('caveman', limits.servers, limits.skillTokens, savings.caveman)),
         saveRow('CMD Deck', L.deckSaved(savings), inPrice, 'magenta'),
       ],
@@ -1582,7 +1620,7 @@ export const register: Register = (on, options) => {
           'HISTORY',
           'green',
           <Box flexDirection="column">
-            {[...hist].reverse().slice(0, histAll ? hist.length : 15).map((it, i) => (
+            {[...hist].reverse().slice(0, 15).map((it, i) => (
               <Text key={`h-${i}-${it.at}`} wrap="wrap">
                 <Text dimColor>{stamp(it.at)} </Text>
                 <Text color={it.status === 'failed' ? 'red' : 'green'} bold>
@@ -1594,13 +1632,11 @@ export const register: Register = (on, options) => {
                 <Text>{it.title}</Text>
               </Text>
             ))}
-            {hist.length > 15 ? (
-              <Box>
-                <Button key="hist-all" label={histAll ? '－ Show latest 15' : `＋ Show whole history (${hist.length})`} onPress={() => void update($, histAllA, (v: boolean) => !v)} />
-              </Box>
-            ) : null}
+            <Box>
+              <Button key="hist-folder" label="📂 Open history folder" onPress={() => void openHistoryFolder($)} />
+            </Box>
           </Box>,
-          hist.length > 15 ? `${histAll ? hist.length : 15} of ${hist.length}` : `${hist.length}`,
+          hist.length > 15 ? `15 of ${hist.length}` : `${hist.length}`,
           'HISTORY',
         )
       : null
