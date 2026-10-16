@@ -63,17 +63,12 @@ Pick one.
 
 ### 1. From the marketplace (recommended)
 
-Type these at the prompt of a terminal `claude` session. The desktop app's Code tab answers that `/plugin` is not available; once installed from a terminal, the plugin loads there too.
+Run these in a terminal. The desktop app's plugin search and Code tab are not the install path.
 
-```
-/plugin marketplace add nixonok/command-deck
-/plugin install command-deck@command-deck-market
-```
-
-One step (Claude Code 2.1.275 or later):
-
-```
-/plugin install command-deck --marketplace nixonok/command-deck
+```bash
+claude plugin marketplace add nixonok/command-deck
+claude plugin install command-deck@command-deck-market
+claude plugin list
 ```
 
 ### 2. From git, no marketplace
