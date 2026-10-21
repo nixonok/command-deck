@@ -144,6 +144,7 @@ Change a value in any of these ways:
 | `autoKeepWarm` · `warmPingMin` · `warmHours` | 1 · 50 · 6 | Keep-warm switch, idle minutes before a ping, and how long it stays on. |
 | `smartTools` | 1 | Defer unneeded MCP servers. |
 | `cavemanRatio` · `routingSaveRatio` · `optimizerTokensPerCall` | 0.35 · 0.67 · 1200 | Assumptions behind the savings estimate. |
+| `ponytailRatio` · `graphifyTokensPerCall` | 0.45 · 1200 | Same for Ponytail (output tokens spared) and Graphify (per query, path or explain). |
 | `inputDollarsPerMTok` · `outputDollarsPerMTok` | 3 · 15 | Prices for the dollar figure. |
 
 ## Edit the mod
@@ -173,7 +174,9 @@ Only under `.claude/deck/` in your project: `rules.md` (your rules for new chats
 
 ## Optional tools
 
-Savings rows for Graft and token-optimizer show only if those MCP servers are installed. Otherwise they stay at 0.
+Savings rows for Graft and token-optimizer show only if those MCP servers are installed. Otherwise they stay at 0. The Ponytail and Graphify rows appear only when the chat lists their skills (or the Graphify MCP server); both are estimates, like Caveman.
+
+The board follows the chat's own task list: new tasks from `TodoWrite` or `TaskCreate` become cards, and a card moves to Doing or Done when its task is started or completed. A card never moves backwards.
 
 ## Versioning
 

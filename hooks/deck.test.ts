@@ -177,7 +177,7 @@ test('the pane draws on the terminal and the desktop', async ($, on) => {
     const ui = await $.ui.mount({ plugin: 'command-deck', surface, component: 'Pane', props: {}, requestId: 'command-deck' } as any)
     const all = (await ui.findAll({ type: 'Text' })).map(t => t.text).join(' | ')
     expect(all).toContain('HISTORY')
-    expect(all).toContain('Did a thing')
+    expect(all).toContain('HISTORY  1') // the history pane starts minimized: its count shows, its rows do not
     await ui.unmount()
   }
 })
@@ -238,4 +238,104 @@ test('Unity rules ride in the plan only for Unity projects', () => {
   const plan = { isClear: true, questions: [], prompt: 'x', tasks: [{ title: 'a', tier: 'sonnet' as const, why: '', parallel: false }] }
   expect(L.planContext(plan)).not.toContain('SerializeField')
   expect(L.planContext(plan, { unity: true })).toContain('SerializeField')
+})
+
+const card = (id: number, title: string, status: Task['status'] = 'todo'): Task => ({ id, title, tier: 'sonnet', why: '', status, tokens: 0, parallel: false })
+
+test('board sync: a TodoWrite list moves cards forward by title', () => {
+  const list = [card(1, 'Map data flow'), card(2, 'Fix done tasks staying in ToDo'), card(3, 'Verify')]
+  const out = L.syncTodos(
+    list,
+    [
+      { content: 'map data flow', status: 'completed' },
+      { content: 'Fix done tasks staying in ToDo', status: 'in_progress' },
+      { content: 'Verify', status: 'pending' },
+    ],
+    1000,
+  )
+  expect(out.map(t => t.status)).toEqual(['done', 'doing', 'todo'])
+  expect(out[0]?.endedAt).toBe(1000)
+  expect(out[1]?.startedAt).toBe(1000)
+})
+
+test('board sync: a card never moves backwards, and junk lists change nothing', () => {
+  const done = card(1, 'Ship the fix please', 'done')
+  expect(L.syncTodos([done], [{ content: 'Ship the fix please', status: 'pending' }], 5)[0]).toEqual(done)
+  expect(L.syncTodos([done], 'nope', 5)).toEqual([done])
+  expect(L.moveCard(card(2, 'x', 'doing'), 'todo', 5).status).toBe('doing')
+  expect(L.statusOfTask('deleted')).toBeUndefined()
+  expect(L.statusOfTask('completed')).toBe('done')
+})
+
+test('board sync: a reworded long title is the same card, a short one must match exactly', () => {
+  expect(L.sameTitle('Fix done tasks staying in ToDo', 'Fix done tasks staying in ToDo today')).toBe(true)
+  expect(L.sameTitle('Verify', 'Verify the board')).toBe(false)
+  expect(L.newTodoTitles([{ content: 'Fix done tasks staying in ToDo today' }, { content: 'Brand new step' }], ['Fix done tasks staying in ToDo'])).toEqual(['Brand new step'])
+})
+
+test('optional tools: Ponytail and Graphify show only when installed or already counted', () => {
+  expect(L.toolAvailable('ponytail', undefined, undefined, 0, undefined)).toBe(false)
+  expect(L.toolAvailable('ponytail', undefined, undefined, 0, ['ponytail'])).toBe(true)
+  expect(L.toolAvailable('graphify', [], undefined, 0, ['graft'])).toBe(false)
+  expect(L.toolAvailable('graphify', [{ server: 'graphify' }], undefined, 0, [])).toBe(true)
+  expect(L.toolAvailable('graphify', [], undefined, 40, [])).toBe(true)
+  expect(L.skillNames([{ name: 'ponytail:ponytail-review', pluginName: 'ponytail' }, { name: 'graphify' }])).toEqual(['ponytail', 'graphify'])
+})
+
+test('Graphify calls are the question commands, not the build ones', () => {
+  expect(L.isGraphifyQuery('graphify query "how does auth work"')).toBe(true)
+  expect(L.isGraphifyQuery('cd x && graphify explain APIRouter')).toBe(true)
+  expect(L.isGraphifyQuery('graphify install')).toBe(false)
+  expect(L.isGraphifyQuery(undefined)).toBe(false)
+})
+
+test('board follows the chat: TodoWrite completes a plan card and adds a new one, TaskCreate and TaskUpdate do the same', async ($, on) => {
+  mock.clock(on, { now: 1_791_868_793_562 })
+  mock.store(on, { 'deck.tasks': [card(1, 'Map the data flow of the board'), card(2, 'Fix done tasks staying in ToDo')] })
+  on('session.start', () => ({ cwd: '/tmp/x' }) as any)
+  on('command.register', () => ({ value: undefined }) as any)
+  on('ui.open', () => ({ value: undefined }) as any)
+  on('process.run', () => ({ value: { stdout: '', stderr: '', code: 1 } }) as any)
+  on('session.usage', () => ({ value: undefined }) as any)
+  on('tool.call', () => ({ result: {} }) as any)
+  await $.session.start({ cwd: '/tmp/x', surface: null, isInteractive: false } as any)
+  await $.tool.call({
+    tool: 'TodoWrite',
+    input: { todos: [{ content: 'Map the data flow of the board', status: 'completed', activeForm: 'x' }, { content: 'Brand new step', status: 'in_progress', activeForm: 'y' }] },
+  } as any)
+  await $.tool.call({ tool: 'TaskCreate', input: { subject: 'Another step to do', description: 'd' } } as any)
+  await $.tool.call({ tool: 'TaskUpdate', input: { taskId: '1', status: 'completed' } } as any)
+  const ui = await $.ui.mount({ plugin: 'command-deck', surface: 'terminal', component: 'Pane', props: {}, requestId: 'command-deck' } as any)
+  const all = (await ui.findAll({ type: 'Text' })).map(x => x.text).join(' | ')
+  expect(all).toContain('2/4 done')
+  expect(all).toMatch(/TODO 1 \| 1 \| ○ \[Sonnet\] Fix done tasks/)
+  expect(all).toMatch(/DOING 1 \| 1 \| \S+ \[Sonnet\] Brand new step/)
+  expect(all).toMatch(/DONE 2 \| 2 \| ✔ \[Sonnet\] Map the data flow/)
+  await ui.unmount()
+})
+
+test('token saved: a Graphify query counts and its row appears; a missing tool shows no row', async ($, on) => {
+  mock.clock(on, { now: 1_791_868_793_562 })
+  mock.store(on, {})
+  on('session.start', () => ({ cwd: '/tmp/x' }) as any)
+  on('command.register', () => ({ value: undefined }) as any)
+  on('ui.open', () => ({ value: undefined }) as any)
+  on('process.run', () => ({ value: { stdout: '', stderr: '', code: 1 } }) as any)
+  on('session.usage', () => ({ value: undefined }) as any)
+  on('tool.call', () => ({ result: {} }) as any)
+  await $.session.start({ cwd: '/tmp/x', surface: null, isInteractive: false } as any)
+  const rows = async () => {
+    const ui = await $.ui.mount({ plugin: 'command-deck', surface: 'terminal', component: 'Pane', props: {}, requestId: 'command-deck' } as any)
+    const all = (await ui.findAll({ type: 'Text' })).map(x => x.text).join(' | ')
+    await ui.unmount()
+    return all
+  }
+  expect(await rows()).not.toContain('Graphify')
+  await $.tool.call({ tool: 'Bash', input: { command: 'graphify install' } } as any)
+  expect(await rows()).not.toContain('Graphify')
+  await $.tool.call({ tool: 'Bash', input: { command: 'graphify query "how does auth work"' } } as any)
+  const all = await rows()
+  expect(all).toContain('Graphify')
+  expect(all).toContain('1.2k')
+  expect(all).not.toContain('Ponytail')
 })

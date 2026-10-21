@@ -212,29 +212,46 @@ export function cavemanSaved(outputTokens: number, ratio: number): number {
   return Math.round((outputTokens * r) / (1 - r))
 }
 
+/** True when a Bash command asks Graphify a question (query, path or explain); the build and install commands save nothing. */
+export const isGraphifyQuery = (command: unknown): boolean => /\bgraphify\s+(query|path|explain)\b/.test(String(command ?? ''))
+
+/** Names the chat lists for its skills (skill and providing plugin, lowercase), to tell which optional tools are installed. */
+export function skillNames(list: { name?: unknown; pluginName?: unknown }[] | undefined): string[] {
+  const out = new Set<string>()
+  for (const s of list ?? []) {
+    out.add(String(s.name ?? '').toLowerCase().split(':')[0] ?? '')
+    if (s.pluginName) out.add(String(s.pluginName).toLowerCase())
+  }
+  out.delete('')
+  return [...out]
+}
+
 // A tool counts as available when its MCP server is connected or it already saved something. With no server data yet
 // we assume available, so a missing breakdown never shows a false "not available". Caveman is a skill with no install
 // signal, so it reads as missing only when the chat loaded no skills at all and nothing was saved.
 export const toolAvailable = (
-  tool: 'graft' | 'optimizer' | 'caveman',
+  tool: 'graft' | 'optimizer' | 'caveman' | 'ponytail' | 'graphify',
   servers: { server: string }[] | undefined,
   skillTokens: number | undefined,
   saved: number,
+  skills?: string[],
 ): boolean => {
   if (saved > 0) return true
+  // Ponytail and Graphify are skills: installed only when the chat lists one (Graphify also ships an MCP server)
+  if (tool === 'ponytail' || tool === 'graphify') return Boolean(skills?.includes(tool) || servers?.some(sv => norm(sv.server) === tool))
   if (tool === 'caveman') return skillTokens === undefined || skillTokens > 0
   if (!servers) return true
   const want = tool === 'graft' ? 'graft' : 'token_optimizer'
   return servers.some(sv => norm(sv.server) === want)
 }
 
-export const ZERO_SAVINGS: Savings = { graft: 0, optimizer: 0, caveman: 0, keepwarm: 0, fresh: 0, routing: 0, tools: 0 }
+export const ZERO_SAVINGS: Savings = { graft: 0, optimizer: 0, caveman: 0, ponytail: 0, graphify: 0, keepwarm: 0, fresh: 0, routing: 0, tools: 0 }
 
 // everything Command Deck saved, one figure: keep-warm, fresh chat, routing and tool deferral
 export const deckSaved = (s: Savings): number => s.keepwarm + s.fresh + s.routing + s.tools
 
 export function dollars(s: Savings, inPerM: number, outPerM: number): number {
-  return ((s.graft + s.optimizer + deckSaved(s)) * inPerM + s.caveman * outPerM) / 1_000_000
+  return ((s.graft + s.optimizer + s.graphify + deckSaved(s)) * inPerM + (s.caveman + s.ponytail) * outPerM) / 1_000_000
 }
 
 // ---------------------------------------------------------------- git
@@ -279,7 +296,7 @@ export function planContext(plan: Plan, opts: { clean?: boolean; unity?: boolean
     `Brief: ${plan.prompt}`,
     'Steps:',
     ...steps,
-    'How to run it: Sonnet and Opus steps you do yourself. Every [Haiku] step MUST go to its own subagent with model "haiku", never done in this chat: give it only the step title, the exact file or spot to change and the done condition, no project history. Start all ∥ Haiku steps in one message so they run at once, but only if they edit different files; steps on the same file go one after another. Read-heavy searching goes to an Explore subagent. Long builds and test runs go in the background. After each subagent returns, check its edit by reading the changed spot or running the existing checks. Report which steps ran on Haiku, which ran in parallel, and any failure.',
+    'How to run it: Sonnet and Opus steps you do yourself. Every [Haiku] step MUST go to its own subagent with model "haiku", never done in this chat: give it only the step title, the exact file or spot to change and the done condition, no project history. Start all ∥ Haiku steps in one message so they run at once, but only if they edit different files; steps on the same file go one after another. Read-heavy searching goes to an Explore subagent. Long builds and test runs go in the background. After each subagent returns, check its edit by reading the changed spot or running the existing checks. Report which steps ran on Haiku, which ran in parallel, and any failure. Keep the board in sync: call TodoWrite with these step titles word for word, marking a step in_progress when you start it and completed when it is done.',
     ...(opts.unity ? [UNITY_RULES] : []),
     ...(clean ? [guidelineExtras(plan)].filter(Boolean) : []),
     ...(clean && plan.tasks.length > 1 ? [finalPass(plan)] : []),
@@ -340,7 +357,7 @@ export function finalLogMarkdown(
     '## Model mix today',
     ...mix,
     '',
-    `Estimated tokens saved: Graft ${compact(savings.graft)}, Context Optimizer ${compact(savings.optimizer)}, Caveman ${compact(savings.caveman)}`,
+    `Estimated tokens saved: Graft ${compact(savings.graft)}, Context Optimizer ${compact(savings.optimizer)}, Caveman ${compact(savings.caveman)}, Ponytail ${compact(savings.ponytail)}, Graphify ${compact(savings.graphify)}`,
     cost === undefined ? '' : `Session cost so far: $${cost.toFixed(2)}`,
     '',
   ].join('\n')
@@ -520,13 +537,42 @@ export function withSmokeTask<T extends { title: string; tier: 'haiku' | 'sonnet
 // titles from a TodoWrite call that are not on the board yet (compared case-insensitively)
 export function newTodoTitles(todos: unknown, have: string[]): string[] {
   if (!Array.isArray(todos)) return []
-  const seen = new Set(have.map(h => h.trim().toLowerCase()))
+  const known = [...have]
   const out: string[] = []
   for (const t of todos) {
     const title = String((t as { content?: unknown })?.content ?? '').trim()
-    if (!title || seen.has(title.toLowerCase())) continue
-    seen.add(title.toLowerCase())
+    if (!title || known.some(h => sameTitle(h, title))) continue
+    known.push(title)
     out.push(title)
   }
   return out
 }
+
+/** Same card title, ignoring case; a long title also matches one that contains it, so a reworded step is not added twice. */
+export function sameTitle(a: string, b: string): boolean {
+  const x = a.trim().toLowerCase()
+  const y = b.trim().toLowerCase()
+  if (!x || !y) return false
+  if (x === y) return true
+  const [short, long] = x.length <= y.length ? [x, y] : [y, x]
+  return short.length >= 12 && long.includes(short)
+}
+
+const TODO_STATUS: Record<string, Status> = { pending: 'todo', in_progress: 'doing', completed: 'done' }
+const RANK: Record<Status, number> = { todo: 0, doing: 1, done: 2, failed: 2 }
+
+/** A card only moves forward (todo, doing, done), so a late or repeated update never reopens finished work. */
+export function moveCard(t: Task, to: Status | undefined, now: number): Task {
+  if (!to || RANK[to] <= RANK[t.status]) return t
+  return { ...t, status: to, startedAt: t.startedAt ?? now, ...(to === 'done' ? { endedAt: now } : {}) }
+}
+
+/** Moves board cards to match the statuses of a TodoWrite list (cards are found by title). */
+export function syncTodos(tasks: Task[], todos: unknown, now: number): Task[] {
+  if (!Array.isArray(todos)) return tasks
+  const wanted = todos.map(t => ({ title: String((t as { content?: unknown })?.content ?? ''), to: TODO_STATUS[String((t as { status?: unknown })?.status)] }))
+  return tasks.map(card => moveCard(card, wanted.find(w => w.to && sameTitle(w.title, card.title))?.to, now))
+}
+
+/** The card status a TaskUpdate status means (`deleted` and unknown values change nothing). */
+export const statusOfTask = (status: unknown): Status | undefined => TODO_STATUS[String(status)]

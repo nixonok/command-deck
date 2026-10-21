@@ -34,6 +34,8 @@ export type Savings = {
   graft: number
   optimizer: number
   caveman: number
+  ponytail: number
+  graphify: number
   // Command Deck's own savings, in input-token equivalents
   keepwarm: number
   fresh: number
@@ -54,6 +56,8 @@ export type Limits = {
   parts?: CtxPart[]
   servers?: CtxServer[]
   skillTokens?: number
+  /** names of the skills and plugins the chat lists, lowercase, to tell which optional tools are installed */
+  skills?: string[]
 }
 
 export type Learn = { tip: string; text: string; isLoading: boolean; isSaved: boolean }

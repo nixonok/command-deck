@@ -34,6 +34,18 @@
       "description": "Share of output tokens Caveman mode is assumed to spare. Used only for the saved estimate.",
       "default": 0.35
     },
+    "ponytailRatio": {
+      "type": "number",
+      "title": "Ponytail output saving (0 to 0.9)",
+      "description": "Share of output tokens Ponytail is assumed to spare (its benchmark: 45 percent fewer). Used only for the saved estimate; 0 turns the row's figure off.",
+      "default": 0.45
+    },
+    "graphifyTokensPerCall": {
+      "type": "number",
+      "title": "Graphify saving per query",
+      "description": "Estimated tokens spared by each graphify query, path or explain call (it does not report its own).",
+      "default": 1200
+    },
     "optimizerTokensPerCall": {
       "type": "number",
       "title": "Context optimizer saving per call",

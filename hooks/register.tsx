@@ -216,6 +216,7 @@ async function applyUsage($: any, u: any) {
   let parts: CtxPart[] | undefined = prev.parts
   let servers: CtxServer[] | undefined = prev.servers
   let skillTokens: number | undefined = prev.skillTokens
+  let skills: string[] | undefined = prev.skills
   if (bd) {
     parts = (bd.categories ?? []).map((c: any) => ({ name: String(c.name), tokens: Number(c.tokens) || 0, kind: c.kind }))
     const by = new Map<string, CtxServer>()
@@ -227,11 +228,13 @@ async function applyUsage($: any, u: any) {
     }
     servers = [...by.values()].sort((a, b) => b.tokens - a.tokens)
     skillTokens = bd.skills?.tokens
+    skills = L.skillNames(bd.skills?.skillFrontmatter)
   }
   await update($, limitsA, () => ({
     parts,
     servers,
     skillTokens,
+    skills,
     fiveHour: five ? { pct: five.percentUsed, resetsAt: five.resetsAt } : undefined,
     sevenDay: week ? { pct: week.percentUsed, resetsAt: week.resetsAt } : undefined,
     ctxTokens: ctx.tokens,
@@ -637,6 +640,8 @@ let isAutoBoard = false
 // makes its first tool call); subagent cards finish with their agent, the main card when the next step starts
 const agentTask = new Map<string, number>()
 let mainTask: number | null = null
+// the model's own task ids (TaskCreate / TaskUpdate) and the card title each one stands for
+const modelTasks = new Map<string, string>()
 
 const tierOf = (model?: string): Task['tier'] | null => {
   const m = String(model ?? '').toLowerCase()
@@ -1054,19 +1059,31 @@ export const register: Register = (on, options) => {
     if (isAutoBoard && !isRunning && !(e as { agentId?: string }).agentId && mainTask === null && agentTask.size === 0 && tool !== 'Agent') {
       mainTask = await beginTask($, null)
     }
-    // TodoWrite sends the whole list; TaskCreate (newer Claude Code) sends one task as `subject`
-    if (tool === 'TodoWrite' || tool === 'TaskCreate') {
+    // The board follows the model's own task list: TodoWrite sends the whole list with statuses, TaskCreate one new task,
+    // TaskUpdate a status change. New titles become cards, and a card moves forward when its task starts or is completed.
+    let created: string | undefined
+    if (tool === 'TodoWrite' || tool === 'TaskCreate' || tool === 'TaskUpdate') {
       try {
-        const input = (e as { input?: { todos?: unknown; subject?: unknown } }).input
-        const listed = tool === 'TaskCreate' ? [{ content: input?.subject }] : input?.todos
+        const input = (e as { input?: { todos?: unknown; subject?: unknown; taskId?: unknown; status?: unknown } }).input
+        const now = await $.clock.now()
+        const listed = tool === 'TodoWrite' ? input?.todos : tool === 'TaskCreate' ? [{ content: input?.subject }] : []
         const add = L.newTodoTitles(listed, (await read($, tasksA)).map(t => t.title))
+        if (tool === 'TaskCreate') created = add[0] ?? String(input?.subject ?? '')
         if (add.length) {
           await update($, tasksA, (l: Task[]) => [
             ...l,
             ...add.map((title, i) => ({ id: Math.max(0, ...l.map(x => x.id)) + i + 1, title, tier: 'sonnet' as const, why: 'Found while working', parallel: false, status: 'todo' as const, tokens: 0 })),
           ])
-          await save($)
         }
+        if (tool === 'TodoWrite') {
+          await update($, tasksA, (l: Task[]) => L.syncTodos(l, listed, now))
+        } else if (tool === 'TaskUpdate') {
+          const title = modelTasks.get(String(input?.taskId))
+          const to = L.statusOfTask(input?.status)
+          if (title && to) await update($, tasksA, (l: Task[]) => l.map(t => (L.sameTitle(t.title, title) ? L.moveCard(t, to, now) : t)))
+        }
+        await save($)
+        await writeProgress($)
       } catch {
         /* the board follows the plan even if a todo list cannot be read */
       }
@@ -1077,7 +1094,15 @@ export const register: Register = (on, options) => {
       deferServers.delete(L.norm(srv))
     }
     const res = await next(e)
+    if (created) {
+      // Claude Code numbers its tasks 1, 2, 3 in creation order, and says so in the result
+      const made = res as { task?: { id?: unknown }; result?: { task?: { id?: unknown } } }
+      modelTasks.set(String(made.task?.id ?? made.result?.task?.id ?? modelTasks.size + 1), created)
+    }
     try {
+      if (L.serverOfTool(tool) === 'graphify' || (tool === 'Bash' && L.isGraphifyQuery((e as { input?: { command?: unknown } }).input?.command))) {
+        await addSaving('graphify', opt('graphifyTokensPerCall', 1200), $)
+      }
       if (tool.startsWith('mcp__graft__')) {
         await addSaving('graft', L.parseGraftSaved((res as { text?: string }).text), $)
       } else if (tool.startsWith('mcp__token-optimizer__smart_')) {
@@ -1127,6 +1152,9 @@ export const register: Register = (on, options) => {
         }
         await writeProgress($)
       }
+    }
+    if (!e.agentId && usage && L.toolAvailable('ponytail', undefined, undefined, 0, (await read($, limitsA)).skills)) {
+      await addSaving('ponytail', L.cavemanSaved(usage.output_tokens ?? 0, opt('ponytailRatio', 0.45)), $)
     }
     if (!e.agentId && usage && (await read($, caveA))) {
       await addSaving('caveman', L.cavemanSaved(usage.output_tokens ?? 0, opt('cavemanRatio', 0.35)), $)
@@ -1555,6 +1583,9 @@ export const register: Register = (on, options) => {
         saveRow('Graft', savings.graft, inPrice, 'green', L.toolAvailable('graft', limits.servers, limits.skillTokens, savings.graft)),
         saveRow('Caveman', savings.caveman, outPrice, 'yellow', L.toolAvailable('caveman', limits.servers, limits.skillTokens, savings.caveman)),
         saveRow('CMD Deck', L.deckSaved(savings), inPrice, 'magenta'),
+        // optional tools: no row at all until the chat lists them
+        ...(L.toolAvailable('ponytail', undefined, undefined, savings.ponytail, limits.skills) ? [saveRow('Ponytail', savings.ponytail, outPrice, 'cyan')] : []),
+        ...(L.toolAvailable('graphify', limits.servers, undefined, savings.graphify, limits.skills) ? [saveRow('Graphify', savings.graphify, inPrice, 'blue')] : []),
       ],
       `≈ $${L.dollars(savings, inPrice, outPrice).toFixed(2)} est.`,
       'SAVED',
