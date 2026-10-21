@@ -37,7 +37,7 @@ It is my one-shot attempt to put most of what I know about saving tokens and cos
 - **Handoff memory.** Writes a handoff note and starts a fresh chat at a context % you choose, or on a new topic.
 - **Cache guard and keep-warm.** Warns before an expensive cold-cache rewrite and can ping to keep the cache warm.
 - **Smart tool deferral.** Moves MCP servers the work does not need behind tool search.
-- **Savings counter.** Estimated tokens and dollars saved.
+- **Savings counter.** Estimated tokens and dollars saved, including Ponytail and Graphify rows when those are installed.
 
 ### The pane
 
@@ -45,7 +45,7 @@ The header holds the switches. Press one before a prompt; the choice is remember
 
 <p align="center"><img src="assets/header.png" alt="Command Deck header buttons: Caveman, Clean code, Auto-plan, Handoff+/Clean, Auto Clean, Reset layout" width="420"></p>
 
-The board follows the plan. A card moves to DOING when work starts and to DONE when it ends.
+The board follows the plan and the chat's own task list. A card moves to DOING when work starts and to DONE when it ends, whether a subagent did it or the main chat completed it with `TodoWrite` or `TaskUpdate`.
 
 <p align="center"><img src="assets/board.png" alt="Kanban board with TODO, DOING and DONE lanes, each task tagged Haiku or Sonnet" width="420"></p>
 
@@ -53,7 +53,7 @@ Usage shows the 5-hour and weekly limits, a context bar split by what fills it, 
 
 <p align="center"><img src="assets/usage.png" alt="Usage panel with limits, context breakdown and cache status" width="420"></p>
 
-The savings counter estimates what Graft, the optimizer, caveman mode and Command Deck itself kept out of the context.
+The savings counter estimates what Graft, the optimizer, Graphify, Ponytail, caveman mode and Command Deck itself kept out of the context.
 
 <p align="center"><img src="assets/savings.png" alt="Token saved today panel with estimated tokens and dollars per source" width="420"></p>
 
