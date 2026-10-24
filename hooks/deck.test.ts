@@ -209,7 +209,7 @@ test('guidelines: core stays small and sections are picked per step and tier', (
   console.log(JSON.stringify(picks), G.guidelineExtras(arch).split(/\s+/).length, 'words')
 })
 
-test('each tier has its own working bot that blinks, sparkles in changing colors and loops', () => {
+test('each tier has its own working bot that blinks, sparkles in changing colors, loops, stays narrow and can hold still', () => {
   const tiers = ['opus', 'sonnet', 'haiku']
   const seqs = tiers.map(t => Array.from({ length: 24 }, (_, f) => L.workingBot(t, f)))
   expect(new Set(seqs.map(s => s.map(b => b.face).join(''))).size).toBe(3)
@@ -219,6 +219,12 @@ test('each tier has its own working bot that blinks, sparkles in changing colors
   expect(new Set(seqs[0]!.map(b => b.sparkColor)).size).toBeGreaterThan(3)
   expect(L.workingBot('opus', -3)).toEqual(L.workingBot('opus', 3))
   expect(L.workingBot('unknown', 0)).toEqual(L.workingBot('sonnet', 0))
+  // ambiguous-width glyphs (• ° ◎ ♪ ☆ ★ and friends) draw two cells in some terminals, so only known narrow ones
+  const NARROW = /^[\x20-\x7e◕◉▿ᴗᵔᗜ♫✦✧✶✷✸✹✺]+$/
+  expect(seqs.flat().every(b => NARROW.test(b.face + b.spark))).toBe(true)
+  // reduced motion holds the first frame at any frame number
+  expect(new Set(Array.from({ length: 8 }, (_, f) => JSON.stringify(L.workingBot('haiku', f, true)))).size).toBe(1)
+  expect(L.workingBot('haiku', 5, true)).toEqual(L.workingBot('haiku', 0))
 })
 
 test('Handoff+/Clean clears the chat when Auto Clean is on, otherwise only compacts', () => {

@@ -1,9 +1,15 @@
 {
   "name": "command-deck",
-  "version": "1.2.4",
+  "version": "1.2.5",
   "description": "Plan with the right model per task, kanban board, usage and git panel, caveman toggle, handoff memory.",
   "types": "./types/index.d.ts",
   "userConfig": {
+    "reducedMotion": {
+      "type": "number",
+      "title": "Reduced motion: hold the Doing-card bots still (1 on, 0 off)",
+      "description": "Terminals have no reduced-motion setting, so turn this on to stop the working-bot animation. The bots still show, frozen on their first frame.",
+      "default": 0
+    },
     "autoStart": {
       "type": "number",
       "title": "Auto-start the deck in every new chat (1 on, 0 off)",

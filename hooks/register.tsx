@@ -318,7 +318,8 @@ async function rulesText($: any): Promise<string> {
 
 // ------------------------------------------------------------ spinner
 function startSpin($: any) {
-  if (spin) return
+  // reduced motion: the bots hold still, so no frame timer runs at all
+  if (spin || opt('reducedMotion', 0) > 0) return
   spin = $.clock.every(350, () => void update($, frameA, (n: number) => n + 1))
 }
 function stopSpin() {
@@ -1445,7 +1446,7 @@ export const register: Register = (on, options) => {
     const colW = twoUp ? Math.max(12, Math.floor((inner - 4) / 3) - 4) : inner - 2
     const card = (t: Task) => {
       const tierColor = L.TIER_COLOR[t.tier]
-      const bot = t.status === 'doing' ? L.workingBot(t.tier, frame) : null
+      const bot = t.status === 'doing' ? L.workingBot(t.tier, frame, opt('reducedMotion', 0) > 0) : null
       const icon = t.status === 'done' ? '✔' : t.status === 'failed' ? '✖' : '○'
       const iconColor = t.status === 'done' ? 'green' : t.status === 'failed' ? 'red' : 'gray'
       return (

@@ -71,6 +71,8 @@ claude plugin install command-deck@command-deck-market
 claude plugin list
 ```
 
+Update later with `claude plugin marketplace update command-deck-market`, then restart Claude. If that says the marketplace is not found, run the `marketplace add` line above first.
+
 ### 2. From git, no marketplace
 
 ```bash
@@ -138,6 +140,7 @@ Change a value in any of these ways:
 | `plannerChatMessages` | 8 | Latest chat messages the planner reads. 0 sends none. |
 | `plannerChatChars` | 500 | Characters kept per message sent to the planner. |
 | `autoStart` | 1 | Open the pane and enable auto-plan in every new chat. |
+| `reducedMotion` | 0 | 1 holds the Doing-card bots still (terminals have no reduced-motion setting). |
 | `coldGuard` | 1 | 0 off, 1 warn, 2 also hold the first send. |
 | `cacheTtlMin` | 60 | Prompt cache lifetime. Use 5 for API-key billing. |
 | `coldMinTokens` | 50000 | Below this context size the guard does nothing. |

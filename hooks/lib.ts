@@ -165,15 +165,17 @@ export function barColor(pct: number): string {
 }
 
 // one little bot per model tier so a glance tells who is working: Haiku hums, Sonnet sparkles, Opus powers up. Each blinks
-// now and then; its sparkle cycles the rainbow. Every face is five cells, so the card title never jitters.
+// now and then; its sparkle cycles the rainbow. Every face is five cells, so the card title never jitters. Only glyphs
+// of narrow East Asian width: ambiguous ones (• ° ◎ ♪ ☆ ★) draw two cells in some terminals and shift the title.
 const BOTS: Record<string, { faces: string[]; sparks: string[] }> = {
-  haiku: { faces: ['(•ᴗ•)', '(•ᴗ•)', '(•ᴗ•)', '(-ᴗ-)', '(•ᴗ•)', '(•ᴗ•)', '(°ᴗ°)', '(•ᴗ•)'], sparks: ['♪', '♫', '♪', '♫', '♪', '♫', '♪', '♫'] },
-  sonnet: { faces: ['[◕ᴗ◕]', '[◕ᴗ◕]', '[◕ᴗ◕]', '[◕ᴗ◕]', '[-ᴗ-]', '[◕ᴗ◕]', '[◕▿◕]', '[◕ᴗ◕]'], sparks: ['✧', '☆', '✦', '★', '✧', '☆', '✦', '★'] },
-  opus: { faces: ['<◉ᗜ◉>', '<◉ᗜ◉>', '<◉_◉>', '<◉ᗜ◉>', '<-ᗜ->', '<◉ᗜ◉>', '<◎ᗜ◎>', '<◉ᗜ◉>'], sparks: ['✺', '✹', '✸', '✷', '✺', '✹', '✸', '✷'] },
+  haiku: { faces: ['(ᵔᴗᵔ)', '(ᵔᴗᵔ)', '(ᵔᴗᵔ)', '(-ᴗ-)', '(ᵔᴗᵔ)', '(ᵔᴗᵔ)', '(oᴗo)', '(ᵔᴗᵔ)'], sparks: ['♫', '~', '♫', '~', '♫', '~', '♫', '~'] },
+  sonnet: { faces: ['[◕ᴗ◕]', '[◕ᴗ◕]', '[◕ᴗ◕]', '[◕ᴗ◕]', '[-ᴗ-]', '[◕ᴗ◕]', '[◕▿◕]', '[◕ᴗ◕]'], sparks: ['✧', '✦', '✶', '✦', '✧', '✦', '✶', '✦'] },
+  opus: { faces: ['<◉ᗜ◉>', '<◉ᗜ◉>', '<◉_◉>', '<◉ᗜ◉>', '<-ᗜ->', '<◉ᗜ◉>', '<◕ᗜ◕>', '<◉ᗜ◉>'], sparks: ['✺', '✹', '✸', '✷', '✺', '✹', '✸', '✷'] },
 }
 const RAINBOW = ['magenta', 'red', 'yellow', 'green', 'cyan', 'blue']
-export function workingBot(tier: string, frame: number): { face: string; spark: string; sparkColor: string } {
-  const f = Math.abs(frame)
+/** The bot for a Doing card at this frame; `still` (the reducedMotion option) holds the first frame. */
+export function workingBot(tier: string, frame: number, still = false): { face: string; spark: string; sparkColor: string } {
+  const f = still ? 0 : Math.abs(frame)
   const bot = BOTS[tier] ?? BOTS.sonnet!
   return { face: bot.faces[f % bot.faces.length]!, spark: bot.sparks[f % bot.sparks.length]!, sparkColor: RAINBOW[f % RAINBOW.length]! }
 }
