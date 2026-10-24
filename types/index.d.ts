@@ -91,6 +91,7 @@ declare module 'claude-code' {
       min: Record<string, boolean>
       order: string[] | null
       history: Hist[]
+      rtk: { state: 'active' | 'inactive' | 'missing'; saved: number } | null
     }
   }
 }

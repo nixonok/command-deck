@@ -37,7 +37,7 @@ It is my one-shot attempt to put most of what I know about saving tokens and cos
 - **Handoff memory.** Writes a handoff note and starts a fresh chat at a context % you choose, or on a new topic.
 - **Cache guard and keep-warm.** Warns before an expensive cold-cache rewrite and can ping to keep the cache warm.
 - **Smart tool deferral.** Moves MCP servers the work does not need behind tool search.
-- **Savings counter.** Estimated tokens and dollars saved, including Ponytail and Graphify rows when those are installed.
+- **Savings counter.** Estimated tokens and dollars saved per tool (Graft, Caveman, Optimizer, RTK, Ponytail, Graphify). A tool that is not installed says (Not Installed); one installed but off says (Not Active).
 
 ### The pane
 
@@ -174,7 +174,7 @@ Only under `.claude/deck/` in your project: `rules.md` (your rules for new chats
 
 ## Optional tools
 
-Savings rows for Graft and token-optimizer show only if those MCP servers are installed. Otherwise they stay at 0. The Ponytail and Graphify rows appear only when the chat lists their skills (or the Graphify MCP server); both are estimates, like Caveman.
+Every savings row shows its tool's state. Graft and token-optimizer count as installed when their MCP servers are connected (the Graft skill without its server reads Not Active). Caveman, Ponytail and Graphify count as installed when the chat lists their skills (or the Graphify MCP server); Caveman reads Not Active while its toggle is off. Their figures are estimates. RTK's row comes from `rtk gain` (today's saved tokens) and `rtk verify` (Not Active when its Claude Code hook is not registered).
 
 The board follows the chat's own task list: new tasks from `TodoWrite` or `TaskCreate` (or `Todo:` lines in a reply) become cards, and a card moves to Doing or Done when its task is started or completed (or a `Done:` line names it). Every subagent shows as its own card.
 

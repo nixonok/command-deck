@@ -16,6 +16,8 @@ const usageA = atom({ plugin: 'command-deck', key: 'usage' } as const, {} as Rec
 const savingsA = atom({ plugin: 'command-deck', key: 'savings' } as const, L.ZERO_SAVINGS)
 const caveA = atom({ plugin: 'command-deck', key: 'cave' } as const, true)
 const gitA = atom({ plugin: 'command-deck', key: 'git' } as const, null as GitInfo | null)
+// RTK runs outside the chat, so its state and today's savings come from its own CLI; null until first checked
+const rtkA = atom({ plugin: 'command-deck', key: 'rtk' } as const, null as { state: L.ToolState; saved: number } | null)
 const limitsA = atom({ plugin: 'command-deck', key: 'limits' } as const, { ctxWindow: 0, ctxPct: 0 } as Limits)
 const frameA = atom({ plugin: 'command-deck', key: 'frame' } as const, 0)
 const tipA = atom({ plugin: 'command-deck', key: 'tip' } as const, 0)
@@ -204,6 +206,22 @@ async function refreshGit($: any) {
     await update($, gitA, () => L.parseGit(first, lines, String(refs.stdout)))
   } catch {
     /* not a repo, or git is missing */
+  }
+}
+
+async function refreshRtk($: any, checkHook = false) {
+  try {
+    const gain = await $.process.run(['rtk', 'gain', '-d', '-f', 'json'])
+    if (gain.exitCode !== 0) throw new Error('rtk gain failed')
+    const d = new Date(await $.clock.now())
+    // RTK keys its days by local date
+    const day = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+    const prev = await read($, rtkA)
+    let state: L.ToolState = prev?.state ?? 'active'
+    if (checkHook || !prev) state = L.rtkHooked((await $.process.run(['rtk', 'verify'])).stdout) ? 'active' : 'inactive'
+    await update($, rtkA, () => ({ state, saved: L.rtkSaved(gain.stdout, day) }))
+  } catch {
+    await update($, rtkA, () => ({ state: 'missing' as const, saved: 0 }))
   }
 }
 
@@ -838,7 +856,9 @@ export const register: Register = (on, options) => {
     }
     void refreshGit($)
     void refreshUsage($)
+    void refreshRtk($, true)
     $.clock.every(30_000, () => void refreshGit($))
+    $.clock.every(30_000, () => void refreshRtk($))
     $.clock.every(60_000, () => void warmTick($))
     await update($, tipA, () => Math.floor(Math.random() * L.TIPS.length))
     $.clock.every(L.TIP_ROTATE_MS, () => void update($, tipA, (n: number) => n + 1))
@@ -1214,7 +1234,7 @@ export const register: Register = (on, options) => {
   // ------------------------------------------------------------ the pane
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Text, Button } = $.ui.resolve(e)
-    const [tasks, usage, savings, cave, clean, autoClean, git, limits, frame, tip, goal, auto, pending, draft, mins, savedOrder, hist, answered] = await Promise.all([
+    const [tasks, usage, savings, cave, clean, autoClean, git, limits, frame, tip, goal, auto, pending, draft, mins, savedOrder, hist, answered, rtk] = await Promise.all([
       read($, tasksA),
       read($, usageA),
       read($, savingsA),
@@ -1233,6 +1253,7 @@ export const register: Register = (on, options) => {
       read($, orderA),
       read($, histA).catch(() => [] as Hist[]),
       read($, answeredA),
+      read($, rtkA),
     ])
     const Input = ($.ui.resolve(e) as any).Input as ((p: Record<string, unknown>) => any) | undefined
     const now = await $.clock.now()
@@ -1572,34 +1593,36 @@ export const register: Register = (on, options) => {
     // ---------------- savings
     const inPrice = opt('inputDollarsPerMTok', 3)
     const outPrice = opt('outputDollarsPerMTok', 15)
-    const saveRow = (label: string, tokens: number, price: number, color: string, available = true) =>
-      available ? (
+    const saveRow = (label: string, tokens: number, price: number, color: string, state: L.ToolState = 'active') =>
+      state === 'missing' ? (
+        <Text wrap="truncate-end" dimColor>
+          {label.padEnd(11)}
+          {'(Not Installed)'}
+        </Text>
+      ) : (
         <Text wrap="truncate-end">
           <Text dimColor>{label.padEnd(11)}</Text>
           <Text color={color} bold>
             {L.compact(tokens).padStart(6)}
           </Text>
-          <Text dimColor>{`  tokens  ≈ $${((tokens * price) / 1_000_000).toFixed(2)}`}</Text>
-        </Text>
-      ) : (
-        <Text wrap="truncate-end" dimColor>
-          {label.padEnd(11)}
-          {'not available'}
+          {state === 'inactive' ? <Text color="yellow">{'  (Not Active)'}</Text> : <Text dimColor>{`  tokens  ≈ $${((tokens * price) / 1_000_000).toFixed(2)}`}</Text>}
         </Text>
       )
+    const rtkSaved = rtk?.saved ?? 0
     const savingsWin = win(
       '✚',
       'TOKEN SAVED TODAY',
       'yellow',
       [
-        saveRow('Graft', savings.graft, inPrice, 'green', L.toolAvailable('graft', limits.servers, limits.skillTokens, savings.graft)),
-        saveRow('Caveman', savings.caveman, outPrice, 'yellow', L.toolAvailable('caveman', limits.servers, limits.skillTokens, savings.caveman)),
+        saveRow('Graft', savings.graft, inPrice, 'green', L.toolState('graft', limits.servers, limits.skillTokens, savings.graft, limits.skills)),
+        saveRow('Caveman', savings.caveman, outPrice, 'yellow', L.toolState('caveman', limits.servers, limits.skillTokens, savings.caveman, limits.skills, cave)),
         saveRow('CMD Deck', L.deckSaved(savings), inPrice, 'magenta'),
-        // optional tools: no row at all until the chat lists them
-        ...(L.toolAvailable('ponytail', undefined, undefined, savings.ponytail, limits.skills) ? [saveRow('Ponytail', savings.ponytail, outPrice, 'cyan')] : []),
-        ...(L.toolAvailable('graphify', limits.servers, undefined, savings.graphify, limits.skills) ? [saveRow('Graphify', savings.graphify, inPrice, 'blue')] : []),
+        saveRow('Optimizer', savings.optimizer, inPrice, 'green', L.toolState('optimizer', limits.servers, limits.skillTokens, savings.optimizer, limits.skills)),
+        saveRow('RTK', rtkSaved, inPrice, 'cyan', rtk?.state),
+        saveRow('Ponytail', savings.ponytail, outPrice, 'cyan', L.toolState('ponytail', undefined, undefined, savings.ponytail, limits.skills)),
+        saveRow('Graphify', savings.graphify, inPrice, 'blue', L.toolState('graphify', limits.servers, undefined, savings.graphify, limits.skills)),
       ],
-      `≈ $${L.dollars(savings, inPrice, outPrice).toFixed(2)} est.`,
+      `≈ $${(L.dollars(savings, inPrice, outPrice) + (rtkSaved * inPrice) / 1_000_000).toFixed(2)} est.`,
       'SAVED',
     )
 

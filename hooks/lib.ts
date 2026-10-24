@@ -245,6 +245,40 @@ export const toolAvailable = (
   return servers.some(sv => norm(sv.server) === want)
 }
 
+export type ToolState = 'active' | 'inactive' | 'missing'
+/** Installed and running, installed but off, or not installed. `isOn` is the tool's own switch (Caveman's toggle). */
+export function toolState(
+  tool: 'graft' | 'optimizer' | 'caveman' | 'ponytail' | 'graphify',
+  servers: { server: string }[] | undefined,
+  skillTokens: number | undefined,
+  saved: number,
+  skills?: string[],
+  isOn = true,
+): ToolState {
+  const listed = Boolean(skills?.includes(tool))
+  // with the skill list known, Caveman is installed only when it is listed
+  if (tool === 'caveman' && skills?.length && !listed && saved === 0) return 'missing'
+  if (!listed && !toolAvailable(tool, servers, skillTokens, saved, skills)) return 'missing'
+  if (!isOn) return 'inactive'
+  // the Graft skill is listed but its MCP server is not connected
+  if (tool === 'graft' && saved === 0 && servers && !servers.some(sv => norm(sv.server) === 'graft')) return 'inactive'
+  return 'active'
+}
+
+/** Tokens RTK saved on `day` (YYYY-MM-DD), from `rtk gain -d -f json`; 0 when the day or the JSON is missing. */
+export function rtkSaved(json: unknown, day: string): number {
+  try {
+    const row = (JSON.parse(String(json)) as { daily?: { date?: unknown; saved_tokens?: unknown }[] }).daily?.find(d => d.date === day)
+    const n = Number(row?.saved_tokens ?? 0)
+    return Number.isFinite(n) && n > 0 ? Math.round(n) : 0
+  } catch {
+    return 0
+  }
+}
+
+/** True when `rtk verify` reports its hook registered with Claude Code, so commands really go through RTK. */
+export const rtkHooked = (verify: unknown): boolean => /^PASS\b.*hook registered/im.test(String(verify ?? ''))
+
 export const ZERO_SAVINGS: Savings = { graft: 0, optimizer: 0, caveman: 0, ponytail: 0, graphify: 0, keepwarm: 0, fresh: 0, routing: 0, tools: 0 }
 
 // everything Command Deck saved, one figure: keep-warm, fresh chat, routing and tool deferral

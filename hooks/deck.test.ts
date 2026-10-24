@@ -336,7 +336,7 @@ test('board follows the chat: TodoWrite completes a plan card and adds a new one
   await ui.unmount()
 })
 
-test('token saved: a Graphify query counts and its row appears; a missing tool shows no row', async ($, on) => {
+test('token saved: a Graphify query counts and its row turns live; a missing tool says Not Installed', async ($, on) => {
   mock.clock(on, { now: 1_791_868_793_562 })
   mock.store(on, {})
   on('session.start', () => ({ cwd: '/tmp/x' }) as any)
@@ -352,14 +352,16 @@ test('token saved: a Graphify query counts and its row appears; a missing tool s
     await ui.unmount()
     return all
   }
-  expect(await rows()).not.toContain('Graphify')
+  expect(await rows()).toMatch(/Graphify\s+\(Not Installed\)/)
   await $.tool.call({ tool: 'Bash', input: { command: 'graphify install' } } as any)
-  expect(await rows()).not.toContain('Graphify')
+  expect(await rows()).toMatch(/Graphify\s+\(Not Installed\)/)
   await $.tool.call({ tool: 'Bash', input: { command: 'graphify query "how does auth work"' } } as any)
   const all = await rows()
-  expect(all).toContain('Graphify')
+  expect(all).not.toMatch(/Graphify\s+\(Not Installed\)/)
   expect(all).toContain('1.2k')
-  expect(all).not.toContain('Ponytail')
+  expect(all).toMatch(/Ponytail\s+\(Not Installed\)/)
+  // rtk is not on this test's PATH (process.run fails), so its row says so
+  expect(all).toMatch(/RTK\s+\(Not Installed\)/)
 })
 
 test('board: an agent takes the card it names, else gets its own Doing card', () => {
@@ -410,4 +412,34 @@ test('board follows agents and replies without a plan: agent card Doing then don
   expect(await board()).toMatch(/DONE 1 \| 1 \| ✔ \[Haiku\] Find board sync hooks/)
   await $.turn.complete({ answer: 'Registered.\nDone: Register GA dimensions' } as any)
   expect(await board()).toContain('2/2 done')
+})
+
+test('token saved: each tool reads active, not active or not installed', () => {
+  const skills = ['graft', 'caveman', 'ponytail']
+  // installed and running
+  expect(L.toolState('graft', [{ server: 'graft' }], 5, 0, skills)).toBe('active')
+  expect(L.toolState('caveman', [], 5, 0, skills, true)).toBe('active')
+  expect(L.toolState('ponytail', undefined, undefined, 0, skills)).toBe('active')
+  // installed, but off: the Graft skill without its server, Caveman with its toggle off
+  expect(L.toolState('graft', [{ server: 'other' }], 5, 0, skills)).toBe('inactive')
+  expect(L.toolState('caveman', [], 5, 900, skills, false)).toBe('inactive')
+  // not installed
+  expect(L.toolState('graft', [{ server: 'other' }], 5, 0, ['caveman'])).toBe('missing')
+  expect(L.toolState('caveman', [], 5, 0, ['graft'], true)).toBe('missing')
+  expect(L.toolState('graphify', [], undefined, 0, [])).toBe('missing')
+  expect(L.toolState('optimizer', [{ server: 'other' }], 5, 0, skills)).toBe('missing')
+  // no data yet reads as active, and a tool that saved today is live
+  expect(L.toolState('graft', undefined, undefined, 0, undefined)).toBe('active')
+  expect(L.toolState('graphify', [], undefined, 40, [])).toBe('active')
+})
+
+test('token saved: RTK savings come from today in its JSON, its hook from rtk verify', () => {
+  const json = JSON.stringify({ daily: [{ date: '2026-10-23', saved_tokens: 27694 }, { date: '2026-10-24', saved_tokens: 19745 }] })
+  expect(L.rtkSaved(json, '2026-10-24')).toBe(19745)
+  expect(L.rtkSaved(json, '2026-10-25')).toBe(0)
+  expect(L.rtkSaved('not json', '2026-10-24')).toBe(0)
+  expect(L.rtkSaved(undefined, '2026-10-24')).toBe(0)
+  expect(L.rtkHooked('PASS  native binary hook registered in settings.json\nPASS  data directory is owner-only')).toBe(true)
+  expect(L.rtkHooked('FAIL  no hook registered in settings.json')).toBe(false)
+  expect(L.rtkHooked('')).toBe(false)
 })
