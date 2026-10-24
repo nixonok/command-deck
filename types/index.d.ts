@@ -1,5 +1,5 @@
 export type Tier = 'haiku' | 'sonnet' | 'opus'
-export type Status = 'todo' | 'doing' | 'done' | 'failed'
+export type Status = 'todo' | 'doing' | 'done' | 'failed' | 'skipped'
 
 export type Task = {
   id: number
@@ -18,6 +18,8 @@ export type Plan = {
   isClear: boolean
   questions: string[]
   prompt: string
+  /** false when no step changes code (release notes, research): such a plan gets no smoke test card */
+  code?: boolean
   tasks: { title: string; tier: Tier; why: string; parallel: boolean }[]
 }
 

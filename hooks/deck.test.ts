@@ -386,14 +386,38 @@ test('board: an agent takes the card it names, else gets its own Doing card', ()
 
 test('board: Todo and Done lines in a reply add and close cards', () => {
   const marks = L.boardMarks('Fixed it.\nDone: Export PNGs at matched size\n- Todo: Register GA dimensions\n`Done: Ship build 1.0022`\nNot done: nope')
-  expect(marks).toEqual({ todo: ['Register GA dimensions'], done: ['Export PNGs at matched size', 'Ship build 1.0022'] })
+  expect(marks).toEqual({ todo: ['Register GA dimensions'], done: ['Export PNGs at matched size', 'Ship build 1.0022'], skip: [] })
   const out = L.applyMarks([card(1, 'Export PNGs at matched size', 'doing')], marks, 9)
   expect(out.map(t => [t.title, t.status])).toEqual([
     ['Export PNGs at matched size', 'done'],
     ['Register GA dimensions', 'todo'],
     ['Ship build 1.0022', 'done'],
   ])
-  expect(L.boardMarks(undefined)).toEqual({ todo: [], done: [] })
+  expect(L.boardMarks(undefined)).toEqual({ todo: [], done: [], skip: [] })
+})
+
+test('board: a Skip line closes a card as skipped, so dropped work leaves Todo without counting as done', () => {
+  const marks = L.boardMarks('Dropped the tests.\nSkip: Add EditMode tests for three game modes\n- Skipped: Smoke test run: confirm the whole change works\nSkip: Not on the board')
+  expect(marks.skip).toEqual(['Add EditMode tests for three game modes', 'Smoke test run: confirm the whole change works', 'Not on the board'])
+  const out = L.applyMarks([card(1, 'Add EditMode tests for three game modes'), card(2, L.SMOKE_TITLE), card(3, 'Find crash root cause')], marks, 9)
+  expect(out.map(t => [t.title, t.status])).toEqual([
+    ['Add EditMode tests for three game modes', 'skipped'],
+    [L.SMOKE_TITLE, 'skipped'],
+    ['Find crash root cause', 'todo'],
+  ])
+  expect(out[0]?.endedAt).toBe(9)
+  // a skipped card is closed: no new agent picks it up
+  expect(L.agentCard(out, ['Add EditMode tests for three game modes'], 'sonnet', 10).id).toBe(4)
+})
+
+test('plan: the smoke test card joins plans that change code only', () => {
+  const steps = [{ title: 'Rewrite release notes', tier: 'sonnet' as const, why: '', parallel: false }]
+  expect(L.withSmokeTask(steps, false).map(t => t.title)).toEqual(['Rewrite release notes'])
+  expect(L.withSmokeTask(steps).map(t => t.title)).toEqual(['Rewrite release notes', L.SMOKE_TITLE])
+  const json = (code: string) => `{"isClear":true,"questions":[],"prompt":"p",${code}"tasks":[{"title":"Rewrite release notes","tier":"sonnet","why":"w","parallel":false}]}`
+  expect(L.parsePlan(json('"code":false,'))?.code).toBe(false)
+  // an older planner answer without the field keeps the smoke card
+  expect(L.parsePlan(json(''))?.code).toBe(true)
 })
 
 test('board follows agents and replies without a plan: agent card Doing then done, a Done line closes a card', async ($, on) => {

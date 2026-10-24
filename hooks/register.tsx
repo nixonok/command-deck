@@ -70,7 +70,7 @@ function opt(name: string, fallback: number): number {
 async function archive($: any) {
   try {
     const now = await $.clock.now()
-    const done = (await read($, tasksA)).filter(t => t.status === 'done' || t.status === 'failed')
+    const done = (await read($, tasksA)).filter(t => t.status === 'done' || t.status === 'failed' || t.status === 'skipped')
     if (!done.length) return
     const have = await read($, histA)
     const seen = new Set(have.map(h => `${h.at}|${h.title}`))
@@ -376,7 +376,7 @@ async function runPlan($: any, ask: string, answers: string[]): Promise<string> 
     await save($)
     return ['A few questions first (answer with /command-deck-plan <your answers>):', ...plan.questions.map((q, i) => `  ${i + 1}. ${q}`)].join('\n')
   }
-  const tasks: Task[] = L.withSmokeTask(plan.tasks).map((t, i) => ({ id: i + 1, title: t.title, tier: t.tier, why: t.why, parallel: t.parallel, status: 'todo', tokens: 0 }))
+  const tasks: Task[] = L.withSmokeTask(plan.tasks, plan.code).map((t, i) => ({ id: i + 1, title: t.title, tier: t.tier, why: t.why, parallel: t.parallel, status: 'todo', tokens: 0 }))
   await archive($)
   await update($, tasksA, () => tasks)
   await update($, goalA, () => plan.prompt)
@@ -791,7 +791,7 @@ async function autoPlan($: any, e: any): Promise<string | 'drop' | null> {
     await save($)
     return pending ? `Answers to the earlier questions are in this message. Original request: ${pending.ask}` : null
   }
-  const tasks: Task[] = L.withSmokeTask(plan.tasks).map((t, i) => ({ id: i + 1, title: t.title, tier: t.tier, why: t.why, parallel: t.parallel, status: 'todo', tokens: 0 }))
+  const tasks: Task[] = L.withSmokeTask(plan.tasks, plan.code).map((t, i) => ({ id: i + 1, title: t.title, tier: t.tier, why: t.why, parallel: t.parallel, status: 'todo', tokens: 0 }))
   await archive($)
   await update($, tasksA, () => tasks)
   await update($, goalA, () => plan.prompt)
@@ -1447,7 +1447,7 @@ export const register: Register = (on, options) => {
     const card = (t: Task) => {
       const tierColor = L.TIER_COLOR[t.tier]
       const bot = t.status === 'doing' ? L.workingBot(t.tier, frame, opt('reducedMotion', 0) > 0) : null
-      const icon = t.status === 'done' ? '✔' : t.status === 'failed' ? '✖' : '○'
+      const icon = t.status === 'done' ? '✔' : t.status === 'failed' ? '✖' : t.status === 'skipped' ? '–' : '○'
       const iconColor = t.status === 'done' ? 'green' : t.status === 'failed' ? 'red' : 'gray'
       return (
         <Text key={`card-${t.id}`} wrap="wrap">
@@ -1464,7 +1464,7 @@ export const register: Register = (on, options) => {
           <Text color={tierColor} bold>
             [{L.TIER_LABEL[t.tier]}]{' '}
           </Text>
-          <Text dimColor={t.status === 'done'}>{t.title}</Text>
+          <Text dimColor={t.status === 'done' || t.status === 'skipped'}>{t.title}</Text>
         </Text>
       )
     }
@@ -1478,7 +1478,7 @@ export const register: Register = (on, options) => {
     )
     const todo = tasks.filter(t => t.status === 'todo')
     const doing = tasks.filter(t => t.status === 'doing')
-    const done = tasks.filter(t => t.status === 'done' || t.status === 'failed')
+    const done = tasks.filter(t => t.status === 'done' || t.status === 'failed' || t.status === 'skipped')
     const boardWin = win(
       '▦',
       'BOARD',
@@ -1698,8 +1698,8 @@ export const register: Register = (on, options) => {
             {[...hist].reverse().slice(0, 15).map((it, i) => (
               <Text key={`h-${i}-${it.at}`} wrap="wrap">
                 <Text dimColor>{stamp(it.at)} </Text>
-                <Text color={it.status === 'failed' ? 'red' : 'green'} bold>
-                  {it.status === 'failed' ? '✖' : it.status === 'handoff' ? '⇢' : '✔'}{' '}
+                <Text color={it.status === 'failed' ? 'red' : it.status === 'skipped' ? 'gray' : 'green'} bold>
+                  {it.status === 'failed' ? '✖' : it.status === 'skipped' ? '–' : it.status === 'handoff' ? '⇢' : '✔'}{' '}
                 </Text>
                 <Text color={L.TIER_COLOR[it.tier]} bold>
                   [{L.TIER_LABEL[it.tier]}]{' '}

@@ -33,7 +33,7 @@ export function asTier(value: unknown, title: string): Tier {
 
 export const PLANNER_SYSTEM = `You turn a developer's rough request into a precise brief and a task list.
 Return ONLY one JSON object, no prose, no code fence:
-{"isClear":boolean,"questions":string[],"prompt":string,"tasks":[{"title":string,"tier":"haiku"|"sonnet"|"opus","why":string,"parallel":boolean}]}
+{"isClear":boolean,"questions":string[],"prompt":string,"code":boolean,"tasks":[{"title":string,"tier":"haiku"|"sonnet"|"opus","why":string,"parallel":boolean}]}
 Rules:
 - Default to isClear=true. Read "Recent conversation" and "Questions already asked and the answers" first: they are the person's own words and count as answers, even short ones like "yes", "both" or "all three" (they answer the question just before them). Never ask again anything already answered or implied there.
 - isClear=false only when one missing fact would change the work (target file, behaviour, scope, platform) and no sensible default exists. Then give at most 2 short, concrete questions and leave tasks empty. When the request is clear enough, skip questions and state any assumption inside "prompt".
@@ -46,6 +46,7 @@ Rules:
   opus   = hard reasoning only: architecture, subtle bugs with unknown cause, concurrency, security, large refactors.
 - "title": terse caveman-style wording, short plain words, no filler or articles, under 9 words (for example "Fix null check in HideBannerAds", not "Fix the null reference check that happens in the HideBannerAds method").
 - "why" is 6 words or fewer.
+- code=true when any step changes code, tests, scenes, assets or build config; false when the work is only writing, research or an answer in chat.
 - parallel=true only when the task edits different files from the tasks next to it and needs nothing they produce; those run at the same time. Split mechanical edits per file so they can run in parallel on Haiku.`
 
 export function plannerPrompt(ask: string, answers: string[], questions: string[] = [], recent: string[] = []): string {
@@ -79,7 +80,7 @@ export function parsePlan(raw: string): Plan | null {
         .slice(0, 8)
     : []
   const isClear = data.isClear !== false && questions.length === 0 && tasks.length > 0
-  return { isClear, questions, prompt: String(data.prompt ?? '').trim(), tasks }
+  return { isClear, questions, prompt: String(data.prompt ?? '').trim(), code: data.code !== false, tasks }
 }
 
 export function taskPrompt(goalPrompt: string, task: Task, done: Task[]): string {
@@ -333,14 +334,14 @@ export function planContext(plan: Plan, opts: { clean?: boolean; unity?: boolean
     `Brief: ${plan.prompt}`,
     'Steps:',
     ...steps,
-    'How to run it: Sonnet and Opus steps you do yourself. Every [Haiku] step MUST go to its own subagent with model "haiku", never done in this chat: give it only the step title, the exact file or spot to change and the done condition, no project history. Start all ∥ Haiku steps in one message so they run at once, but only if they edit different files; steps on the same file go one after another. Read-heavy searching goes to an Explore subagent. Long builds and test runs go in the background. After each subagent returns, check its edit by reading the changed spot or running the existing checks. Report which steps ran on Haiku, which ran in parallel, and any failure. Keep the board in sync: give each subagent a step title word for word as its description; for steps you do yourself, call TodoWrite (or TaskCreate/TaskUpdate) with these step titles word for word, and if you have none of those tools, end the reply with a line `Done: <step title>` for each step verified done.',
+    'How to run it: Sonnet and Opus steps you do yourself. Every [Haiku] step MUST go to its own subagent with model "haiku", never done in this chat: give it only the step title, the exact file or spot to change and the done condition, no project history. Start all ∥ Haiku steps in one message so they run at once, but only if they edit different files; steps on the same file go one after another. Read-heavy searching goes to an Explore subagent. Long builds and test runs go in the background. After each subagent returns, check its edit by reading the changed spot or running the existing checks. Report which steps ran on Haiku, which ran in parallel, and any failure. Keep the board in sync: give each subagent a step title word for word as its description; for steps you do yourself, call TodoWrite (or TaskCreate/TaskUpdate) with these step titles word for word, and if you have none of those tools, end the reply with a line `Done: <step title>` for each step verified done and `Skip: <step title>` for each step dropped on purpose.',
     ...(opts.unity ? [UNITY_RULES] : []),
     ...(clean ? [guidelineExtras(plan)].filter(Boolean) : []),
     ...(clean && plan.tasks.length > 1 ? [finalPass(plan)] : []),
   ].join('\n')
 }
 
-export const HOUSE_SECTION = `Command Deck is active. Keep the main context small: send read-heavy exploration to an Explore subagent (it runs on Haiku), give precise mechanical edits to Haiku subagents (several at once when they touch different files), run long builds, tests and checks in the background, and keep replies short. Keep the board true: every subagent becomes a card named by its description, so give each a clear one. New work you plan and work you finish yourself goes on the board through TodoWrite or TaskCreate/TaskUpdate; if you have none of those tools, end the reply with a line "Todo: <title>" for each new task and "Done: <title>" for each task verified done.`
+export const HOUSE_SECTION = `Command Deck is active. Keep the main context small: send read-heavy exploration to an Explore subagent (it runs on Haiku), give precise mechanical edits to Haiku subagents (several at once when they touch different files), run long builds, tests and checks in the background, and keep replies short. Keep the board true: every subagent becomes a card named by its description, so give each a clear one. New work you plan and work you finish yourself goes on the board through TodoWrite or TaskCreate/TaskUpdate; if you have none of those tools, end the reply with a line "Todo: <title>" for each new task, "Done: <title>" for each task verified done and "Skip: <title>" for each task dropped on purpose, so no card stays in Todo once nothing will work on it.`
 
 // ---------------------------------------------------------------- caveman
 
@@ -351,7 +352,7 @@ export const CAVEMAN_SECTION = `Caveman mode is ON: the person switched it on wi
 export const dayKey = (ms: number): string => new Date(ms).toISOString().slice(0, 10)
 export const stamp = (ms: number): string => new Date(ms).toISOString().slice(0, 16).replace(/[-:T]/g, '')
 
-const box = (s: Status): string => (s === 'done' ? '[x]' : s === 'failed' ? '[!]' : s === 'doing' ? '[~]' : '[ ]')
+const box = (s: Status): string => (s === 'done' ? '[x]' : s === 'failed' ? '[!]' : s === 'skipped' ? '[-]' : s === 'doing' ? '[~]' : '[ ]')
 
 export function progressMarkdown(goal: string, tasks: Task[], date: string): string {
   const next = tasks.filter(t => t.status === 'todo' || t.status === 'doing')
@@ -438,7 +439,7 @@ export function handoffMarkdown(args: {
     ...args.tasks.map(t => `- ${box(t.status)} ${t.title} (${TIER_LABEL[t.tier]})${t.note ? ` — ${t.note}` : ''}`),
     '',
     '## Next steps',
-    ...(args.tasks.filter(t => t.status !== 'done').map(t => `- ${t.title}`) || []),
+    ...(args.tasks.filter(t => t.status !== 'done' && t.status !== 'skipped').map(t => `- ${t.title}`) || []),
     '',
   ].join('\n')
 }
@@ -450,7 +451,7 @@ export const HANDOFF_ASK = `Write a handoff note for a fresh chat that continues
 /** The handoff prompt anchored on the current goal and the unfinished board cards, so the note describes this goal
  * (not an older topic from earlier in the chat) and what was mid-way when the chat ended. */
 export function handoffAsk(goal: string, tasks: Pick<Task, 'title' | 'status'>[]): string {
-  const open = tasks.filter(t => t.status !== 'done').map(t => `- ${t.title} (${t.status})`)
+  const open = tasks.filter(t => t.status !== 'done' && t.status !== 'skipped').map(t => `- ${t.title} (${t.status})`)
   return [
     HANDOFF_ASK,
     goal ? `Current goal: ${goal}` : '',
@@ -579,9 +580,10 @@ export type CleanStep = 'clean' | 'compact'
 export const cleanStep = (autoClean: boolean): CleanStep => (autoClean ? 'clean' : 'compact')
 
 export const SMOKE_TITLE = 'Smoke test run: confirm the whole change works'
-// every plan ends with a smoke test run, so the board is not done until the work is checked
-export function withSmokeTask<T extends { title: string; tier: 'haiku' | 'sonnet' | 'opus'; why: string; parallel: boolean }>(tasks: T[]): (T | { title: string; tier: 'haiku'; why: string; parallel: boolean })[] {
-  if (tasks.some(t => /smoke/i.test(t.title))) return tasks
+// a plan that changes code ends with a smoke test run, so the board is not done until the work is checked; a plan
+// with no code (release notes, research) gets none, or its card would sit in Todo with nothing to test
+export function withSmokeTask<T extends { title: string; tier: 'haiku' | 'sonnet' | 'opus'; why: string; parallel: boolean }>(tasks: T[], code = true): (T | { title: string; tier: 'haiku'; why: string; parallel: boolean })[] {
+  if (!code || tasks.some(t => /smoke/i.test(t.title))) return tasks
   return [...tasks, { title: SMOKE_TITLE, tier: 'haiku', why: 'Run the project smoke test and report the result', parallel: false }]
 }
 
@@ -616,7 +618,7 @@ export function setCard(t: Task, to: Status | undefined, now: number): Task {
   if (!to || to === t.status) return t
   const { startedAt, endedAt: _ended, ...rest } = t
   if (to === 'todo') return { ...rest, status: to }
-  return { ...rest, status: to, startedAt: startedAt ?? now, ...(to === 'done' ? { endedAt: now } : {}) }
+  return { ...rest, status: to, startedAt: startedAt ?? now, ...(to === 'done' || to === 'skipped' ? { endedAt: now } : {}) }
 }
 
 /** Sets board cards to the statuses of a TodoWrite list (cards are found by title). */
@@ -639,25 +641,27 @@ export function pickCard(tasks: Task[], tier: Task['tier'] | null, hints: string
 /** The card a starting subagent works: the todo or doing card its description or prompt names, else a new Doing card
  * titled by its description, so every agent the chat shows is on the board. */
 export function agentCard(tasks: Task[], hints: string[], tier: Task['tier'], now: number): { tasks: Task[]; id: number } {
-  const named = tasks.find(t => t.status !== 'done' && t.status !== 'failed' && hints.some(h => sameTitle(t.title, h)))
+  const named = tasks.find(t => t.status !== 'done' && t.status !== 'failed' && t.status !== 'skipped' && hints.some(h => sameTitle(t.title, h)))
   if (named) return { id: named.id, tasks: tasks.map(t => (t.id === named.id ? setCard(t, 'doing', now) : t)) }
   const title = hints.map(h => h.replace(/\s+/g, ' ').trim()).find(Boolean)?.slice(0, 80) || 'Subagent'
   const id = Math.max(0, ...tasks.map(t => t.id)) + 1
   return { id, tasks: [...tasks, { id, title, tier, why: 'Subagent', parallel: false, status: 'doing', tokens: 0, startedAt: now }] }
 }
 
-/** `Todo: <title>` and `Done: <title>` lines in a reply, the board marks for a chat that has no task tools. */
-export function boardMarks(answer: unknown): { todo: string[]; done: string[] } {
-  const out = { todo: [] as string[], done: [] as string[] }
+/** `Todo: <title>`, `Done: <title>` and `Skip: <title>` lines in a reply, the board marks for a chat that has no task
+ * tools. Skip closes work that was dropped on purpose, so it leaves Todo without counting as done. */
+export function boardMarks(answer: unknown): { todo: string[]; done: string[]; skip: string[] } {
+  const out = { todo: [] as string[], done: [] as string[], skip: [] as string[] }
   for (const line of String(answer ?? '').split('\n')) {
-    const m = /^\s*(?:[-*]\s*)?`?(todo|done):\s*(.+?)`?\s*$/i.exec(line)
-    if (m) out[m[1]!.toLowerCase() as 'todo' | 'done'].push(m[2]!.trim())
+    const m = /^\s*(?:[-*]\s*)?`?(todo|done|skip|skipped):\s*(.+?)`?\s*$/i.exec(line)
+    if (m) out[m[1]!.toLowerCase().startsWith('skip') ? 'skip' : (m[1]!.toLowerCase() as 'todo' | 'done')].push(m[2]!.trim())
   }
   return out
 }
 
-/** Applies reply marks: a Todo title not on the board is added, a Done title closes its card (or is added as done). */
-export function applyMarks(tasks: Task[], marks: { todo: string[]; done: string[] }, now: number): Task[] {
+/** Applies reply marks: a Todo title not on the board is added, a Done title closes its card (or is added as done),
+ * a Skip title closes its card as skipped (a Skip for a card not on the board changes nothing). */
+export function applyMarks(tasks: Task[], marks: { todo: string[]; done: string[]; skip?: string[] }, now: number): Task[] {
   let out = tasks
   const add = (title: string, status: Status) => {
     const id = Math.max(0, ...out.map(t => t.id)) + 1
@@ -668,6 +672,7 @@ export function applyMarks(tasks: Task[], marks: { todo: string[]; done: string[
     if (out.some(t => sameTitle(t.title, title))) out = out.map(t => (sameTitle(t.title, title) ? setCard(t, 'done', now) : t))
     else add(title, 'done')
   }
+  for (const title of marks.skip ?? []) out = out.map(t => (sameTitle(t.title, title) && t.status !== 'done' ? setCard(t, 'skipped', now) : t))
   return out
 }
 
