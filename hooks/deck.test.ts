@@ -258,13 +258,35 @@ test('board sync: a TodoWrite list moves cards forward by title', () => {
   expect(out[1]?.startedAt).toBe(1000)
 })
 
-test('board sync: a card never moves backwards, and junk lists change nothing', () => {
-  const done = card(1, 'Ship the fix please', 'done')
-  expect(L.syncTodos([done], [{ content: 'Ship the fix please', status: 'pending' }], 5)[0]).toEqual(done)
+test('board sync: the model task list can reopen a card ticked too early; junk lists and repeats change nothing', () => {
+  const done = { ...card(1, 'Ship the fix please', 'done'), startedAt: 1, endedAt: 2 }
+  const reopened = L.syncTodos([done], [{ content: 'Ship the fix please', status: 'pending' }], 5)[0]
+  expect(reopened?.status).toBe('todo')
+  expect(reopened?.endedAt).toBeUndefined()
+  expect(L.syncTodos([done], [{ content: 'Ship the fix please', status: 'completed' }], 9)[0]).toEqual(done)
   expect(L.syncTodos([done], 'nope', 5)).toEqual([done])
-  expect(L.moveCard(card(2, 'x', 'doing'), 'todo', 5).status).toBe('doing')
+  expect(L.syncTodos([done], [], 5)).toEqual([done])
+  expect(L.setCard(card(2, 'x', 'doing'), 'todo', 5).status).toBe('todo')
   expect(L.statusOfTask('deleted')).toBeUndefined()
   expect(L.statusOfTask('completed')).toBe('done')
+})
+
+test('board: a starting agent takes the card its description or prompt names; a guess is not a match', () => {
+  const list = [card(1, 'Read pixel size of reference screenshots'), { ...card(2, 'Export PNGs at matched size'), tier: 'haiku' as const }, card(3, 'Verify every file dimension')]
+  expect(L.pickCard(list, 'haiku', ['Export PNGs at matched size'])).toEqual({ id: 2, matched: true })
+  expect(L.pickCard(list, 'haiku', ['', 'Step title: Verify every file dimension. Done when sizes match.'])).toEqual({ id: 3, matched: true })
+  expect(L.pickCard(list, 'haiku', ['Find tutorial events'])).toEqual({ id: 2, matched: false })
+  expect(L.pickCard(list, null, [])).toEqual({ id: 1, matched: false })
+  expect(L.pickCard([card(1, 'Done already', 'done')], null, ['Done already'])).toBeNull()
+})
+
+test('handoff prompt: carries the current goal and only the unfinished cards', () => {
+  const ask = L.handoffAsk('Fix the board ticking', [card(1, 'Trace the cause', 'done'), card(2, 'Apply the fix', 'doing'), card(3, 'Push the release')])
+  expect(ask).toContain('Current goal: Fix the board ticking')
+  expect(ask).toContain('- Apply the fix (doing)')
+  expect(ask).toContain('- Push the release (todo)')
+  expect(ask).not.toContain('Trace the cause')
+  expect(L.handoffAsk('', [])).not.toContain('Current goal')
 })
 
 test('board sync: a reworded long title is the same card, a short one must match exactly', () => {

@@ -410,6 +410,20 @@ export function handoffMarkdown(args: {
 
 export const HANDOFF_ASK = `Write a handoff note for a fresh chat that continues this work. Plain markdown bullets, under 250 words: what was being built and why, decisions made, what is finished, what is half done (file:line where useful), known problems, and the very next step. Facts only; no greetings.`
 
+/** The handoff prompt anchored on the current goal and the unfinished board cards, so the note describes this goal
+ * (not an older topic from earlier in the chat) and what was mid-way when the chat ended. */
+export function handoffAsk(goal: string, tasks: Pick<Task, 'title' | 'status'>[]): string {
+  const open = tasks.filter(t => t.status !== 'done').map(t => `- ${t.title} (${t.status})`)
+  return [
+    HANDOFF_ASK,
+    goal ? `Current goal: ${goal}` : '',
+    open.length ? `Unfinished board tasks. Say which of these this chat really finished and checked, and which was mid-way:\n${open.join('\n')}` : '',
+    'Lead with where THIS goal stands and the exact next action.',
+  ]
+    .filter(Boolean)
+    .join('\n\n')
+}
+
 export const TIPS: string[] = [
   'Run a second Claude in a git worktree: one builds, one reviews, no stepping on each other.',
   'A Stop hook that runs your tests turns "done" into "done and passing".',
@@ -559,19 +573,30 @@ export function sameTitle(a: string, b: string): boolean {
 }
 
 const TODO_STATUS: Record<string, Status> = { pending: 'todo', in_progress: 'doing', completed: 'done' }
-const RANK: Record<Status, number> = { todo: 0, doing: 1, done: 2, failed: 2 }
-
-/** A card only moves forward (todo, doing, done), so a late or repeated update never reopens finished work. */
-export function moveCard(t: Task, to: Status | undefined, now: number): Task {
-  if (!to || RANK[to] <= RANK[t.status]) return t
-  return { ...t, status: to, startedAt: t.startedAt ?? now, ...(to === 'done' ? { endedAt: now } : {}) }
+/** Sets a card to the status the model's own task list gives it. That list is the authority, so it can also reopen
+ * a card the board moved too early. */
+export function setCard(t: Task, to: Status | undefined, now: number): Task {
+  if (!to || to === t.status) return t
+  const { startedAt, endedAt: _ended, ...rest } = t
+  if (to === 'todo') return { ...rest, status: to }
+  return { ...rest, status: to, startedAt: startedAt ?? now, ...(to === 'done' ? { endedAt: now } : {}) }
 }
 
-/** Moves board cards to match the statuses of a TodoWrite list (cards are found by title). */
+/** Sets board cards to the statuses of a TodoWrite list (cards are found by title). */
 export function syncTodos(tasks: Task[], todos: unknown, now: number): Task[] {
   if (!Array.isArray(todos)) return tasks
   const wanted = todos.map(t => ({ title: String((t as { content?: unknown })?.content ?? ''), to: TODO_STATUS[String((t as { status?: unknown })?.status)] }))
-  return tasks.map(card => moveCard(card, wanted.find(w => w.to && sameTitle(w.title, card.title))?.to, now))
+  return tasks.map(card => setCard(card, wanted.find(w => w.to && sameTitle(w.title, card.title))?.to, now))
+}
+
+/** The todo card a starting agent takes: one its description or prompt names (matched, so its end may close the card),
+ * else the first of its model tier, else the first non-Haiku card, else the first. */
+export function pickCard(tasks: Task[], tier: Task['tier'] | null, hints: string[] = []): { id: number; matched: boolean } | null {
+  const todo = tasks.filter(t => t.status === 'todo')
+  const named = todo.find(t => hints.some(h => sameTitle(t.title, h)))
+  if (named) return { id: named.id, matched: true }
+  const t = (tier ? todo.find(x => x.tier === tier) : todo.find(x => x.tier !== 'haiku')) ?? todo[0]
+  return t ? { id: t.id, matched: false } : null
 }
 
 /** The card status a TaskUpdate status means (`deleted` and unknown values change nothing). */

@@ -466,7 +466,7 @@ async function handoff($: any): Promise<string> {
   // the summary comes from a fork of this very conversation: the prefix is already cached, so it is cheap
   let summary = ''
   try {
-    const r = await $.model.fork({ prompt: L.HANDOFF_ASK })
+    const r = await $.model.fork({ prompt: L.handoffAsk(await read($, goalA), await read($, tasksA)) })
     if (r.isAnswered) summary = r.text
   } catch {
     /* the note still carries the goal, rules, board and repo state */
@@ -637,8 +637,9 @@ async function runClean($: any, ask: CleanAsk): Promise<string> {
 
 let isAutoBoard = false
 // auto board: a card moves to Doing only when work on it really starts (a subagent spawns, or the main agent
-// makes its first tool call); subagent cards finish with their agent, the main card when the next step starts
-const agentTask = new Map<string, number>()
+// makes its first tool call). Only proof closes a card: the model's own task list, or a subagent whose description
+// names the card (matched). A guessed card stays Doing, so a handoff never claims work that did not happen.
+const agentTask = new Map<string, { id: number; matched: boolean }>()
 let mainTask: number | null = null
 // the model's own task ids (TaskCreate / TaskUpdate) and the card title each one stands for
 const modelTasks = new Map<string, string>()
@@ -648,15 +649,14 @@ const tierOf = (model?: string): Task['tier'] | null => {
   return m.includes('haiku') ? 'haiku' : m.includes('sonnet') ? 'sonnet' : m.includes('opus') ? 'opus' : null
 }
 
-async function beginTask($: any, tier: Task['tier'] | null): Promise<number | null> {
-  let picked: number | null = null
+async function beginTask($: any, tier: Task['tier'] | null, hints: string[] = []): Promise<{ id: number; matched: boolean } | null> {
+  let picked: { id: number; matched: boolean } | null = null
   const now = await $.clock.now()
   await update($, tasksA, (l: Task[]) => {
-    const todo = l.filter(t => t.status === 'todo')
-    const t = (tier ? todo.find(x => x.tier === tier) : todo.find(x => x.tier !== 'haiku')) ?? todo[0]
-    if (!t) return l
-    picked = t.id
-    return l.map(x => (x.id === t.id ? { ...x, status: 'doing' as const, startedAt: now } : x))
+    const p = L.pickCard(l, tier, hints)
+    if (!p) return l
+    picked = p
+    return l.map(x => (x.id === p.id ? { ...x, status: 'doing' as const, startedAt: now } : x))
   })
   return picked
 }
@@ -1030,13 +1030,11 @@ export const register: Register = (on, options) => {
     const wantsHaiku = !e.model && (String(e.subagentType) === 'Explore' || (nextTodo?.tier === 'haiku' && String(e.subagentType) !== 'Plan'))
     const input = auto && wantsHaiku ? { ...e, model: 'haiku' } : e
     const res = (await next(input)) as { model?: string; agentId?: string; deny?: unknown }
+    // starting an agent proves nothing finished, so the main card stays Doing until the model's task list closes it
     if (isAutoBoard && !isRunning && !res?.deny) {
-      if (mainTask !== null) {
-        await endTask($, mainTask)
-        mainTask = null
-      }
-      const id = await beginTask($, tierOf(res?.model ?? (input as { model?: string }).model))
-      if (id !== null && res?.agentId) agentTask.set(res.agentId, id)
+      const ask = e as { description?: unknown; prompt?: unknown }
+      const picked = await beginTask($, tierOf(res?.model ?? (input as { model?: string }).model), [String(ask.description ?? ''), String(ask.prompt ?? '')])
+      if (picked && res?.agentId) agentTask.set(res.agentId, picked)
     }
     return res as never
   })
@@ -1057,7 +1055,7 @@ export const register: Register = (on, options) => {
   on('tool.call', async ($, e, next) => {
     const tool = String(e.tool)
     if (isAutoBoard && !isRunning && !(e as { agentId?: string }).agentId && mainTask === null && agentTask.size === 0 && tool !== 'Agent') {
-      mainTask = await beginTask($, null)
+      mainTask = (await beginTask($, null))?.id ?? null
     }
     // The board follows the model's own task list: TodoWrite sends the whole list with statuses, TaskCreate one new task,
     // TaskUpdate a status change. New titles become cards, and a card moves forward when its task starts or is completed.
@@ -1080,7 +1078,7 @@ export const register: Register = (on, options) => {
         } else if (tool === 'TaskUpdate') {
           const title = modelTasks.get(String(input?.taskId))
           const to = L.statusOfTask(input?.status)
-          if (title && to) await update($, tasksA, (l: Task[]) => l.map(t => (L.sameTitle(t.title, title) ? L.moveCard(t, to, now) : t)))
+          if (title && to) await update($, tasksA, (l: Task[]) => l.map(t => (L.sameTitle(t.title, title) ? L.setCard(t, to, now) : t)))
         }
         await save($)
         await writeProgress($)
@@ -1134,18 +1132,16 @@ export const register: Register = (on, options) => {
       completions.set(e.agentId, done)
       waiters.get(e.agentId)?.(done)
       waiters.delete(e.agentId)
-      const id = agentTask.get(e.agentId)
-      if (id !== undefined) {
+      const card = agentTask.get(e.agentId)
+      if (card !== undefined) {
         agentTask.delete(e.agentId)
-        await endTask($, id)
+        if (card.matched) await endTask($, card.id)
       }
     } else if (isAutoBoard && !isRunning) {
-      // a card is done only when its work ran: close what was doing; cards never started stay todo so the board
-      // never claims more than happened (the spinner stops when none is left)
+      // a turn ending proves nothing finished: Doing cards stay Doing until the model's task list closes them, and
+      // cards never started stay todo (the spinner stops when none is left to start)
       if (agentTask.size === 0) {
         mainTask = null
-        const now = await $.clock.now()
-        await update($, tasksA, (l: Task[]) => l.map(t => (t.status === 'doing' ? { ...t, status: 'done' as const, endedAt: now } : t)))
         if (!(await read($, tasksA)).some(t => t.status === 'todo')) {
           isAutoBoard = false
           stopSpin()
