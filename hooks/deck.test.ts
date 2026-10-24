@@ -209,13 +209,16 @@ test('guidelines: core stays small and sections are picked per step and tier', (
   console.log(JSON.stringify(picks), G.guidelineExtras(arch).split(/\s+/).length, 'words')
 })
 
-test('each tier has its own one-cell working animation that loops', () => {
+test('each tier has its own working bot that blinks, sparkles in changing colors and loops', () => {
   const tiers = ['opus', 'sonnet', 'haiku']
-  const seqs = tiers.map(t => Array.from({ length: 12 }, (_, f) => L.tierSpinner(t, f)))
-  expect(new Set(seqs.map(s => s.join(''))).size).toBe(3)
-  expect(seqs.flat().every(c => [...c].length === 1)).toBe(true)
-  expect(tiers.every(t => L.tierSpinner(t, 0) !== L.tierSpinner(t, 1))).toBe(true)
-  expect(L.tierSpinner('opus', -3)).toBe(L.tierSpinner('opus', 3))
+  const seqs = tiers.map(t => Array.from({ length: 24 }, (_, f) => L.workingBot(t, f)))
+  expect(new Set(seqs.map(s => s.map(b => b.face).join(''))).size).toBe(3)
+  // a fixed-width face keeps the card title still
+  expect(seqs.flat().every(b => [...b.face].length === 5 && [...b.spark].length === 1)).toBe(true)
+  expect(tiers.every(t => new Set(Array.from({ length: 8 }, (_, f) => L.workingBot(t, f).face)).size > 1)).toBe(true)
+  expect(new Set(seqs[0]!.map(b => b.sparkColor)).size).toBeGreaterThan(3)
+  expect(L.workingBot('opus', -3)).toEqual(L.workingBot('opus', 3))
+  expect(L.workingBot('unknown', 0)).toEqual(L.workingBot('sonnet', 0))
 })
 
 test('Handoff+/Clean clears the chat when Auto Clean is on, otherwise only compacts', () => {
@@ -407,7 +410,7 @@ test('board follows agents and replies without a plan: agent card Doing then don
     return all
   }
   await $.agent.spawn({ description: 'Find board sync hooks', prompt: 'look', subagentType: 'Explore' } as any)
-  expect(await board()).toMatch(/DOING 1 \| 1 \| \S+ \[Haiku\] Find board sync hooks/)
+  expect(await board()).toMatch(/DOING 1 \| 1 \| .*\(.ᴗ.\)\S \[Haiku\] Find board sync hooks/)
   await $.turn.complete({ agentId: 'a1', answer: 'found' } as any)
   expect(await board()).toMatch(/DONE 1 \| 1 \| ✔ \[Haiku\] Find board sync hooks/)
   await $.turn.complete({ answer: 'Registered.\nDone: Register GA dimensions' } as any)

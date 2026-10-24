@@ -1445,13 +1445,21 @@ export const register: Register = (on, options) => {
     const colW = twoUp ? Math.max(12, Math.floor((inner - 4) / 3) - 4) : inner - 2
     const card = (t: Task) => {
       const tierColor = L.TIER_COLOR[t.tier]
-      const icon = t.status === 'doing' ? L.tierSpinner(t.tier, frame) : t.status === 'done' ? '✔' : t.status === 'failed' ? '✖' : '○'
-      const iconColor = t.status === 'done' ? 'green' : t.status === 'failed' ? 'red' : t.status === 'doing' ? tierColor : 'gray'
+      const bot = t.status === 'doing' ? L.workingBot(t.tier, frame) : null
+      const icon = t.status === 'done' ? '✔' : t.status === 'failed' ? '✖' : '○'
+      const iconColor = t.status === 'done' ? 'green' : t.status === 'failed' ? 'red' : 'gray'
       return (
         <Text key={`card-${t.id}`} wrap="wrap">
-          <Text color={iconColor} bold>
-            {icon}{' '}
-          </Text>
+          {bot ? (
+            <Text bold>
+              <Text color={tierColor}>{bot.face}</Text>
+              <Text color={bot.sparkColor}>{bot.spark}</Text>{' '}
+            </Text>
+          ) : (
+            <Text color={iconColor} bold>
+              {icon}{' '}
+            </Text>
+          )}
           <Text color={tierColor} bold>
             [{L.TIER_LABEL[t.tier]}]{' '}
           </Text>
