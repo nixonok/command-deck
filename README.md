@@ -45,7 +45,7 @@ The header holds the switches. Press one before a prompt; the choice is remember
 
 <p align="center"><img src="assets/header.png" alt="Command Deck header buttons: Caveman, Clean code, Auto-plan, Handoff+/Clean, Auto Clean, Reset layout" width="420"></p>
 
-The board follows the plan and the chat's own task list. A card moves to DOING when work starts and to DONE when it ends, whether a subagent did it or the main chat completed it with `TodoWrite` or `TaskUpdate`.
+The board follows the plan, every subagent and the chat's own task list. Each subagent gets a card (the step its description names, or a new one) that is DOING while it runs and DONE when it returns. The main chat closes a card with `TodoWrite` or `TaskUpdate`, or, where it has no task tools, with a `Done: <title>` line in its reply (`Todo: <title>` adds one). DOING means work is live: a card the main chat only touched goes back to TODO when its turn ends.
 
 <p align="center"><img src="assets/board.png" alt="Kanban board with TODO, DOING and DONE lanes, each task tagged Haiku or Sonnet" width="420"></p>
 
@@ -176,7 +176,7 @@ Only under `.claude/deck/` in your project: `rules.md` (your rules for new chats
 
 Savings rows for Graft and token-optimizer show only if those MCP servers are installed. Otherwise they stay at 0. The Ponytail and Graphify rows appear only when the chat lists their skills (or the Graphify MCP server); both are estimates, like Caveman.
 
-The board follows the chat's own task list: new tasks from `TodoWrite` or `TaskCreate` become cards, and a card moves to Doing or Done when its task is started or completed. A card never moves backwards.
+The board follows the chat's own task list: new tasks from `TodoWrite` or `TaskCreate` (or `Todo:` lines in a reply) become cards, and a card moves to Doing or Done when its task is started or completed (or a `Done:` line names it). Every subagent shows as its own card.
 
 ## Versioning
 

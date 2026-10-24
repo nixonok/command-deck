@@ -296,14 +296,14 @@ export function planContext(plan: Plan, opts: { clean?: boolean; unity?: boolean
     `Brief: ${plan.prompt}`,
     'Steps:',
     ...steps,
-    'How to run it: Sonnet and Opus steps you do yourself. Every [Haiku] step MUST go to its own subagent with model "haiku", never done in this chat: give it only the step title, the exact file or spot to change and the done condition, no project history. Start all ∥ Haiku steps in one message so they run at once, but only if they edit different files; steps on the same file go one after another. Read-heavy searching goes to an Explore subagent. Long builds and test runs go in the background. After each subagent returns, check its edit by reading the changed spot or running the existing checks. Report which steps ran on Haiku, which ran in parallel, and any failure. Keep the board in sync: call TodoWrite with these step titles word for word, marking a step in_progress when you start it and completed when it is done.',
+    'How to run it: Sonnet and Opus steps you do yourself. Every [Haiku] step MUST go to its own subagent with model "haiku", never done in this chat: give it only the step title, the exact file or spot to change and the done condition, no project history. Start all ∥ Haiku steps in one message so they run at once, but only if they edit different files; steps on the same file go one after another. Read-heavy searching goes to an Explore subagent. Long builds and test runs go in the background. After each subagent returns, check its edit by reading the changed spot or running the existing checks. Report which steps ran on Haiku, which ran in parallel, and any failure. Keep the board in sync: give each subagent a step title word for word as its description; for steps you do yourself, call TodoWrite (or TaskCreate/TaskUpdate) with these step titles word for word, and if you have none of those tools, end the reply with a line `Done: <step title>` for each step verified done.',
     ...(opts.unity ? [UNITY_RULES] : []),
     ...(clean ? [guidelineExtras(plan)].filter(Boolean) : []),
     ...(clean && plan.tasks.length > 1 ? [finalPass(plan)] : []),
   ].join('\n')
 }
 
-export const HOUSE_SECTION = `Command Deck is active. Keep the main context small: send read-heavy exploration to an Explore subagent (it runs on Haiku), give precise mechanical edits to Haiku subagents (several at once when they touch different files), run long builds, tests and checks in the background, and keep replies short.`
+export const HOUSE_SECTION = `Command Deck is active. Keep the main context small: send read-heavy exploration to an Explore subagent (it runs on Haiku), give precise mechanical edits to Haiku subagents (several at once when they touch different files), run long builds, tests and checks in the background, and keep replies short. Keep the board true: every subagent becomes a card named by its description, so give each a clear one. New work you plan and work you finish yourself goes on the board through TodoWrite or TaskCreate/TaskUpdate; if you have none of those tools, end the reply with a line "Todo: <title>" for each new task and "Done: <title>" for each task verified done.`
 
 // ---------------------------------------------------------------- caveman
 
@@ -597,6 +597,41 @@ export function pickCard(tasks: Task[], tier: Task['tier'] | null, hints: string
   if (named) return { id: named.id, matched: true }
   const t = (tier ? todo.find(x => x.tier === tier) : todo.find(x => x.tier !== 'haiku')) ?? todo[0]
   return t ? { id: t.id, matched: false } : null
+}
+
+/** The card a starting subagent works: the todo or doing card its description or prompt names, else a new Doing card
+ * titled by its description, so every agent the chat shows is on the board. */
+export function agentCard(tasks: Task[], hints: string[], tier: Task['tier'], now: number): { tasks: Task[]; id: number } {
+  const named = tasks.find(t => t.status !== 'done' && t.status !== 'failed' && hints.some(h => sameTitle(t.title, h)))
+  if (named) return { id: named.id, tasks: tasks.map(t => (t.id === named.id ? setCard(t, 'doing', now) : t)) }
+  const title = hints.map(h => h.replace(/\s+/g, ' ').trim()).find(Boolean)?.slice(0, 80) || 'Subagent'
+  const id = Math.max(0, ...tasks.map(t => t.id)) + 1
+  return { id, tasks: [...tasks, { id, title, tier, why: 'Subagent', parallel: false, status: 'doing', tokens: 0, startedAt: now }] }
+}
+
+/** `Todo: <title>` and `Done: <title>` lines in a reply, the board marks for a chat that has no task tools. */
+export function boardMarks(answer: unknown): { todo: string[]; done: string[] } {
+  const out = { todo: [] as string[], done: [] as string[] }
+  for (const line of String(answer ?? '').split('\n')) {
+    const m = /^\s*(?:[-*]\s*)?`?(todo|done):\s*(.+?)`?\s*$/i.exec(line)
+    if (m) out[m[1]!.toLowerCase() as 'todo' | 'done'].push(m[2]!.trim())
+  }
+  return out
+}
+
+/** Applies reply marks: a Todo title not on the board is added, a Done title closes its card (or is added as done). */
+export function applyMarks(tasks: Task[], marks: { todo: string[]; done: string[] }, now: number): Task[] {
+  let out = tasks
+  const add = (title: string, status: Status) => {
+    const id = Math.max(0, ...out.map(t => t.id)) + 1
+    out = [...out, { id, title, tier: 'sonnet', why: 'Found while working', parallel: false, status, tokens: 0, ...(status === 'done' ? { startedAt: now, endedAt: now } : {}) }]
+  }
+  for (const title of marks.todo) if (!out.some(t => sameTitle(t.title, title))) add(title, 'todo')
+  for (const title of marks.done) {
+    if (out.some(t => sameTitle(t.title, title))) out = out.map(t => (sameTitle(t.title, title) ? setCard(t, 'done', now) : t))
+    else add(title, 'done')
+  }
+  return out
 }
 
 /** The card status a TaskUpdate status means (`deleted` and unknown values change nothing). */

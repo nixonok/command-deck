@@ -361,3 +361,53 @@ test('token saved: a Graphify query counts and its row appears; a missing tool s
   expect(all).toContain('1.2k')
   expect(all).not.toContain('Ponytail')
 })
+
+test('board: an agent takes the card it names, else gets its own Doing card', () => {
+  const list = [card(1, 'Export PNGs at matched size'), card(2, 'Verify', 'done')]
+  const named = L.agentCard(list, ['Export PNGs at matched size'], 'haiku', 5)
+  expect(named.id).toBe(1)
+  expect(named.tasks[0]?.status).toBe('doing')
+  const own = L.agentCard(list, ['Find board sync hooks', 'long prompt'], 'haiku', 5)
+  expect(own.id).toBe(3)
+  expect(own.tasks[2]).toMatchObject({ title: 'Find board sync hooks', tier: 'haiku', status: 'doing', startedAt: 5 })
+  expect(L.agentCard([], ['', '  '], 'sonnet', 5).tasks[0]?.title).toBe('Subagent')
+})
+
+test('board: Todo and Done lines in a reply add and close cards', () => {
+  const marks = L.boardMarks('Fixed it.\nDone: Export PNGs at matched size\n- Todo: Register GA dimensions\n`Done: Ship build 1.0022`\nNot done: nope')
+  expect(marks).toEqual({ todo: ['Register GA dimensions'], done: ['Export PNGs at matched size', 'Ship build 1.0022'] })
+  const out = L.applyMarks([card(1, 'Export PNGs at matched size', 'doing')], marks, 9)
+  expect(out.map(t => [t.title, t.status])).toEqual([
+    ['Export PNGs at matched size', 'done'],
+    ['Register GA dimensions', 'todo'],
+    ['Ship build 1.0022', 'done'],
+  ])
+  expect(L.boardMarks(undefined)).toEqual({ todo: [], done: [] })
+})
+
+test('board follows agents and replies without a plan: agent card Doing then done, a Done line closes a card', async ($, on) => {
+  mock.clock(on, { now: 1_791_868_793_562 })
+  mock.store(on, { 'deck.tasks': [card(1, 'Register GA dimensions')] })
+  on('session.start', () => ({ cwd: '/tmp/x' }) as any)
+  on('command.register', () => ({ value: undefined }) as any)
+  on('ui.open', () => ({ value: undefined }) as any)
+  on('process.run', () => ({ value: { stdout: '', stderr: '', code: 1 } }) as any)
+  on('session.usage', () => ({ value: undefined }) as any)
+  on('fs.write', () => ({ value: undefined }) as any)
+  on('fs.exists', () => ({ value: false }) as any)
+  on('agent.spawn', () => ({ agentId: 'a1', model: 'haiku' }) as any)
+  on('turn.complete', () => ({ text: '' }) as any)
+  await $.session.start({ cwd: '/tmp/x', surface: null, isInteractive: false } as any)
+  const board = async () => {
+    const ui = await $.ui.mount({ plugin: 'command-deck', surface: 'terminal', component: 'Pane', props: {}, requestId: 'command-deck' } as any)
+    const all = (await ui.findAll({ type: 'Text' })).map(x => x.text).join(' | ')
+    await ui.unmount()
+    return all
+  }
+  await $.agent.spawn({ description: 'Find board sync hooks', prompt: 'look', subagentType: 'Explore' } as any)
+  expect(await board()).toMatch(/DOING 1 \| 1 \| \S+ \[Haiku\] Find board sync hooks/)
+  await $.turn.complete({ agentId: 'a1', answer: 'found' } as any)
+  expect(await board()).toMatch(/DONE 1 \| 1 \| ✔ \[Haiku\] Find board sync hooks/)
+  await $.turn.complete({ answer: 'Registered.\nDone: Register GA dimensions' } as any)
+  expect(await board()).toContain('2/2 done')
+})

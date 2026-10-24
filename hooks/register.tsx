@@ -636,10 +636,10 @@ async function runClean($: any, ask: CleanAsk): Promise<string> {
 }
 
 let isAutoBoard = false
-// auto board: a card moves to Doing only when work on it really starts (a subagent spawns, or the main agent
-// makes its first tool call). Only proof closes a card: the model's own task list, or a subagent whose description
-// names the card (matched). A guessed card stays Doing, so a handoff never claims work that did not happen.
-const agentTask = new Map<string, { id: number; matched: boolean }>()
+// Every subagent has its own card (the one its description names, else a new one), Doing while it runs and done when
+// it returns. The main agent's first tool call guesses a card into Doing only for that turn. Only proof closes a main
+// card: the model's own task list, or a `Done:` line in its reply. So Doing means work is live right now.
+const agentTask = new Map<string, number>()
 let mainTask: number | null = null
 // the model's own task ids (TaskCreate / TaskUpdate) and the card title each one stands for
 const modelTasks = new Map<string, string>()
@@ -1030,11 +1030,20 @@ export const register: Register = (on, options) => {
     const wantsHaiku = !e.model && (String(e.subagentType) === 'Explore' || (nextTodo?.tier === 'haiku' && String(e.subagentType) !== 'Plan'))
     const input = auto && wantsHaiku ? { ...e, model: 'haiku' } : e
     const res = (await next(input)) as { model?: string; agentId?: string; deny?: unknown }
-    // starting an agent proves nothing finished, so the main card stays Doing until the model's task list closes it
-    if (isAutoBoard && !isRunning && !res?.deny) {
+    if (!isRunning && !res?.deny && res?.agentId) {
       const ask = e as { description?: unknown; prompt?: unknown }
-      const picked = await beginTask($, tierOf(res?.model ?? (input as { model?: string }).model), [String(ask.description ?? ''), String(ask.prompt ?? '')])
-      if (picked && res?.agentId) agentTask.set(res.agentId, picked)
+      const tier = tierOf(res?.model ?? (input as { model?: string }).model) ?? 'sonnet'
+      const now = await $.clock.now()
+      let id = 0
+      await update($, tasksA, (l: Task[]) => {
+        const made = L.agentCard(l, [String(ask.description ?? ''), String(ask.prompt ?? '')], tier, now)
+        id = made.id
+        return made.tasks
+      })
+      agentTask.set(res.agentId, id)
+      startSpin($)
+      await save($)
+      await writeProgress($)
     }
     return res as never
   })
@@ -1073,6 +1082,8 @@ export const register: Register = (on, options) => {
             ...add.map((title, i) => ({ id: Math.max(0, ...l.map(x => x.id)) + i + 1, title, tier: 'sonnet' as const, why: 'Found while working', parallel: false, status: 'todo' as const, tokens: 0 })),
           ])
         }
+        // the model's own list now says what is in progress, so the turn's guessed card is no longer a guess
+        mainTask = null
         if (tool === 'TodoWrite') {
           await update($, tasksA, (l: Task[]) => L.syncTodos(l, listed, now))
         } else if (tool === 'TaskUpdate') {
@@ -1135,19 +1146,24 @@ export const register: Register = (on, options) => {
       const card = agentTask.get(e.agentId)
       if (card !== undefined) {
         agentTask.delete(e.agentId)
-        if (card.matched) await endTask($, card.id)
-      }
-    } else if (isAutoBoard && !isRunning) {
-      // a turn ending proves nothing finished: Doing cards stay Doing until the model's task list closes them, and
-      // cards never started stay todo (the spinner stops when none is left to start)
-      if (agentTask.size === 0) {
-        mainTask = null
-        if (!(await read($, tasksA)).some(t => t.status === 'todo')) {
-          isAutoBoard = false
-          stopSpin()
-        }
+        await endTask($, card)
+        if (!isRunning && !(await read($, tasksA)).some(t => t.status === 'doing')) stopSpin()
         await writeProgress($)
       }
+    } else if (!isRunning) {
+      // a turn ending proves nothing finished: only `Done:` lines close cards; the turn's guessed card goes back to
+      // todo, so the board never shows work in progress that nothing is doing
+      const now = await $.clock.now()
+      const marks = L.boardMarks((e as { answer?: string }).answer)
+      const guess = mainTask
+      mainTask = null
+      await update($, tasksA, (l: Task[]) =>
+        L.applyMarks(l, marks, now).map(t => (t.id === guess && t.status === 'doing' && ![...agentTask.values()].includes(t.id) ? L.setCard(t, 'todo', now) : t)),
+      )
+      const left = await read($, tasksA)
+      if (!left.some(t => t.status === 'doing')) stopSpin()
+      if (!left.some(t => t.status === 'todo')) isAutoBoard = false
+      await writeProgress($)
     }
     if (!e.agentId && usage && L.toolAvailable('ponytail', undefined, undefined, 0, (await read($, limitsA)).skills)) {
       await addSaving('ponytail', L.cavemanSaved(usage.output_tokens ?? 0, opt('ponytailRatio', 0.45)), $)
