@@ -70,6 +70,47 @@ test('handoff carries rules, repo state and only the open tasks as next steps', 
   expect(md).toContain('Rules every new chat must follow')
   expect(md).toContain('- Open thing')
   expect(md.split('## Next steps')[1]).not.toContain('Done thing')
+  expect(md).not.toContain('continue with the first open task')
+  expect(md).not.toContain('## Last answer')
+  const withAnswer = L.handoffMarkdown({ goal: 'Ship it', tasks, rules: '', git: null, date: '2026-11-02', summary: 'Answer given.', lastAnswer: 'Plan: route by room code.' })
+  expect(withAnswer).toContain('## Last answer')
+  expect(withAnswer).toContain('Plan: route by room code.')
+  // what really happened comes before the deck's possibly stale plan
+  expect(withAnswer.indexOf('## Last answer')).toBeLessThan(withAnswer.indexOf('## Goal'))
+})
+
+test('fresh chat: a carried message is done, otherwise the new chat reads and waits instead of starting tasks', () => {
+  expect(L.freshPrompt('h.md', 'fix the deck')).toContain('Then do this:\n\nfix the deck')
+  const bare = L.freshPrompt('h.md')
+  expect(bare).toContain('wait for me')
+  expect(bare).not.toContain('first open task')
+})
+
+test('fresh gate: only a typed, non-slash message while nothing runs starts the due fresh chat', () => {
+  const base = { isDue: true, isHuman: true, text: 'next thing', isBusy: false }
+  expect(L.freshGate(base)).toBe(true)
+  expect(L.freshGate({ ...base, isDue: false })).toBe(false)
+  expect(L.freshGate({ ...base, isHuman: false })).toBe(false)
+  expect(L.freshGate({ ...base, isBusy: true })).toBe(false)
+  expect(L.freshGate({ ...base, text: '/command-deck' })).toBe(false)
+  expect(L.freshGate({ ...base, text: '   ' })).toBe(false)
+})
+
+test('clip keeps the head and the tail, where an answer puts its fix list', () => {
+  expect(L.clip('short', 10)).toBe('short')
+  const long = `start ${'x'.repeat(100)} fixes: a b c`
+  const cut = L.clip(long, 40)
+  expect(cut.length).toBeLessThanOrEqual(40)
+  expect(cut.startsWith('start')).toBe(true)
+  expect(cut.endsWith('a b c')).toBe(true)
+})
+
+test('planner rules: questions are answered in chat, and "fix it" means what the last answer proposed', () => {
+  expect(L.PLANNER_SYSTEM).toContain('answered in chat, never built')
+  expect(L.PLANNER_SYSTEM).toContain('points back at the chat')
+  // a question plan is one Sonnet step, so it is not attached and the board and goal stay as they were
+  const q = L.parsePlan('{"isClear":true,"questions":[],"prompt":"Answer","code":false,"tasks":[{"title":"Answer in chat","tier":"sonnet","why":"question"}]}')
+  expect(q && L.isWorthAttaching(q)).toBe(false)
 })
 
 test('/command-deck-cave switches caveman on and the system prompt gains its section', async ($, on) => {

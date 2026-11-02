@@ -35,6 +35,8 @@ export const PLANNER_SYSTEM = `You turn a developer's rough request into a preci
 Return ONLY one JSON object, no prose, no code fence:
 {"isClear":boolean,"questions":string[],"prompt":string,"code":boolean,"tasks":[{"title":string,"tier":"haiku"|"sonnet"|"opus","why":string,"parallel":boolean}]}
 Rules:
+- A question (why, what, how, which is best, explain, compare, advice) is answered in chat, never built: code=false and exactly one task, "Answer in chat" on sonnet. Do not turn a question into build steps.
+- A request that points back at the chat ("fix it", "do that", "the fixes above", "fix the X") means the work the last Assistant message proposed or named; plan exactly that. If the cut chat lines do not show what it means, keep the person's own words in "prompt" and plan one sonnet step; never invent a different task.
 - Default to isClear=true. Read "Recent conversation" and "Questions already asked and the answers" first: they are the person's own words and count as answers, even short ones like "yes", "both" or "all three" (they answer the question just before them). Never ask again anything already answered or implied there.
 - isClear=false only when one missing fact would change the work (target file, behaviour, scope, platform) and no sensible default exists. Then give at most 2 short, concrete questions and leave tasks empty. When the request is clear enough, skip questions and state any assumption inside "prompt".
 - Never ask what the project files, git history or the conversation can answer. A thing you cannot open (a web page behind a login) is not a question: plan around local files and config instead.
@@ -407,6 +409,25 @@ export const DEFAULT_RULES = `# Rules every new chat must follow
 - Add your own rules here: edit .claude/deck/rules.md in the project.
 `
 
+/** Long text cut to head and tail: the end of an answer is where its offer or fix list usually sits. */
+export function clip(text: string, max: number): string {
+  if (text.length <= max) return text
+  const half = Math.max(1, Math.floor((max - 3) / 2))
+  return `${text.slice(0, half)} … ${text.slice(-half)}`
+}
+
+/** The first prompt of a fresh chat: the person's own message when there is one, otherwise read and wait. */
+export function freshPrompt(path: string, carry?: string): string {
+  return carry
+    ? `Read ${path} for context from the previous chat. Then do this:\n\n${carry}`
+    : `Read ${path}. In a few lines, give me the main points of the last answer and where things stand, then wait for me. Do not start any task.`
+}
+
+/** A due fresh chat starts only on a typed message while nothing runs, so it never cuts work or an unread answer. */
+export function freshGate(a: { isDue: boolean; isHuman: boolean; text: string; isBusy: boolean }): boolean {
+  return a.isDue && a.isHuman && !a.isBusy && !a.text.trim().startsWith('/') && a.text.trim().length > 0
+}
+
 export function handoffMarkdown(args: {
   goal: string
   tasks: Task[]
@@ -415,17 +436,19 @@ export function handoffMarkdown(args: {
   date: string
   contextPct?: number
   summary?: string
+  lastAnswer?: string
 }): string {
   const g = args.git
   return [
     `# Handoff ${args.date}`,
     '',
-    'Start of the new chat: read this file, then continue with the first open task. Do not re-read old work unless a task needs it.',
+    "Start of the new chat: read this file, then do only what the person's message asks. Goal and Tasks are the deck's plan and may be stale: never start them on your own, and if they disagree with Where things stand or the Last answer, trust those and ask.",
     '',
+    ...(args.summary ? ['## Where things stand', args.summary.trim(), ''] : []),
+    ...(args.lastAnswer?.trim() ? ['## Last answer (the person read this just before the clear)', args.lastAnswer.trim(), ''] : []),
     '## Goal',
     args.goal || '(none set)',
     '',
-    ...(args.summary ? ['## Where things stand', args.summary.trim(), ''] : []),
     '## Rules',
     args.rules.trim(),
     '',

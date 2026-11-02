@@ -1,6 +1,6 @@
 {
   "name": "command-deck",
-  "version": "1.3.0",
+  "version": "1.3.1",
   "description": "Plan with the right model per task, kanban board, usage and git panel, caveman toggle, handoff memory.",
   "types": "./types/index.d.ts",
   "userConfig": {
@@ -73,7 +73,7 @@
     "autoFreshPct": {
       "type": "number",
       "title": "Handoff and clear at context %",
-      "description": "When the context window passes this percent, write a handoff, clear the chat and continue from it. 0 turns it off.",
+      "description": "When the context window passes this percent, your next typed message writes a handoff, clears the chat and goes to the fresh chat. Never mid-turn. 0 turns it off.",
       "default": 50
     },
     "coldGuard": {

@@ -44,6 +44,11 @@ type Done = { answer: string; tokens: number }
 let isRunning = false
 let isNudged = false
 let isCompacting = false
+// the context passed autoFreshPct: the next typed message moves to a fresh chat (never mid-turn, never before the
+// person has read the last answer)
+let isFreshDue = false
+// the main agent's last reply, kept for the handoff because a clear wipes it from the screen
+let lastAnswer = ''
 // prompt cache: estimated from the clock (the server is never asked), see lib.ts coldCheck
 let lastTouch = 0
 let lastReal = 0
@@ -500,10 +505,11 @@ async function handoff($: any): Promise<string> {
       git: await read($, gitA),
       date: L.dayKey(now),
       contextPct: limits.ctxPct,
+      lastAnswer: L.clip(lastAnswer, 4000),
     }),
   )
   await writeProgress($)
-  return `Handoff written to ${path}.\nIn a new chat, send:\n  Read ${path} and continue with the first open task.`
+  return `Handoff written to ${path}.\nIn a new chat, send:\n  ${L.freshPrompt(path)}`
 }
 
 
@@ -604,12 +610,11 @@ async function setCave($: any, value?: boolean): Promise<boolean> {
 // first prompt of the fresh chat for the person.
 async function fresh($: any, carry?: string): Promise<string> {
   $.ui.toast('Writing the handoff…')
+  isFreshDue = false
   const shed = (await read($, limitsA)).ctxTokens ?? 0
   const note = await handoff($)
   const path = /Handoff written to (\S+)\./.exec(note)?.[1] ?? `${DIR}/`
-  const first = carry
-    ? `Read ${path} for context from the previous chat. Then do this:\n\n${carry}`
-    : `Read ${path} and continue with the first open task.`
+  const first = L.freshPrompt(path, carry)
   // the handoff holds the findings of this chat; list it in the history so it can be found later
   await addHistory($, `Handoff saved: ${path}`, shed)
   const ask: CleanAsk = { path, first, carry, shed }
@@ -690,7 +695,7 @@ const recent: string[] = []
 function remember(role: string, text: string | undefined, max = opt('plannerChatChars', 500)) {
   const t = String(text ?? '').replace(/\s+/g, ' ').trim()
   if (!t) return
-  recent.push(`${role}: ${t.length > max ? `${t.slice(0, max)}…` : t}`)
+  recent.push(`${role}: ${L.clip(t, max)}`)
   while (recent.length > Math.max(0, opt('plannerChatMessages', 8))) recent.shift()
 }
 const HUMAN = new Set(['composer', 'bridge', 'sdk'])
@@ -1012,6 +1017,22 @@ export const register: Register = (on, options) => {
         $.ui.toast(msg)
       }
     }
+    const isBusy = isTurnLive || isRunning || isCompacting || agentTask.size > 0
+    if (L.freshGate({ isDue: isFreshDue, isHuman: HUMAN.has(String(e.origin?.kind)), text: e.text, isBusy })) {
+      const carry = e.text
+      isCompacting = true
+      $.clock.after(100, () => {
+        void fresh($, carry)
+          .then(t => $.ui.toast(t))
+          .catch(() => undefined)
+          .finally(() => {
+            isCompacting = false
+            lastTouch = 0
+            coldWarned = false
+          })
+      })
+      return { drop: 'Context is big: moving to a fresh chat with a handoff. Your message goes with it.' }
+    }
     const limit = opt('handoffTurns', 12)
     if (limit > 0 && !isNudged && !e.text.startsWith('/') && e.text.length > 40) {
       try {
@@ -1149,7 +1170,9 @@ export const register: Register = (on, options) => {
     const usage = e.usage
     if (!e.agentId) {
       isTurnLive = false
-      remember('Assistant', (e as { answer?: string }).answer, 600)
+      lastAnswer = String((e as { answer?: string }).answer ?? '')
+      // board lines (Done:/Skip:) would fill the kept tail, where an answer's offer or fix list sits
+      remember('Assistant', lastAnswer.replace(/^(Todo|Done|Skip): .*$/gm, ''), 1200)
       lastTouch = await $.clock.now()
       lastReal = lastTouch
       coldWarned = false
@@ -1201,20 +1224,12 @@ export const register: Register = (on, options) => {
     if (!e.agentId && opt('autoKeepWarm', 1) > 0 && !warmUntil && (ctx.ctxTokens ?? 0) >= opt('coldMinTokens', 50_000)) {
       await armWarm($, opt('warmHours', 6), 'big context')
     }
-    // at the set share of the window: write the handoff, clear, and carry on in a small fresh chat
+    // at the set share of the window, the next typed message moves to a small fresh chat and goes there; clearing
+    // right here would wipe an answer the person has not read yet, or cut work that is still going
     const freshPct = opt('autoFreshPct', 50)
-    if (freshPct > 0 && !isCompacting && !isRunning && agentTask.size === 0 && !e.agentId && ctx.ctxPct >= freshPct) {
-      isCompacting = true
-      $.clock.after(1500, () => {
-        void fresh($)
-          .then(t => $.ui.toast(`Context at ${Math.round(ctx.ctxPct)}%. ${t}`))
-          .catch(() => undefined)
-          .finally(() => {
-            isCompacting = false
-            lastTouch = 0
-            coldWarned = false
-          })
-      })
+    if (freshPct > 0 && !isFreshDue && !e.agentId && ctx.ctxPct >= freshPct) {
+      isFreshDue = true
+      $.ui.toast(`Context at ${Math.round(ctx.ctxPct)}%: your next message starts a fresh chat with a handoff and goes there.`)
     }
     // plain compaction stays available for people who want it instead (autoCompactPct, off by default)
     const limit = opt('autoCompactPct', 0)
