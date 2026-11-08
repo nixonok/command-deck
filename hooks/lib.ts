@@ -324,6 +324,9 @@ export const ZERO_SAVINGS: Savings = { graft: 0, optimizer: 0, caveman: 0, ponyt
 // everything Command Deck saved, one figure: keep-warm, fresh chat, routing and tool deferral
 export const deckSaved = (s: Savings): number => s.keepwarm + s.fresh + s.routing + s.tools
 
+// a guess, like each row: everything the deck and the tools it shows spared, RTK's own count included
+export const totalSaved = (s: Savings, rtk = 0): number => s.graft + s.optimizer + s.graphify + s.caveman + s.ponytail + deckSaved(s) + rtk
+
 export function dollars(s: Savings, inPerM: number, outPerM: number): number {
   return ((s.graft + s.optimizer + s.graphify + deckSaved(s)) * inPerM + (s.caveman + s.ponytail) * outPerM) / 1_000_000
 }

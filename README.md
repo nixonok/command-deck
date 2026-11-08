@@ -53,7 +53,7 @@ Usage shows the 5-hour and weekly limits, a context bar split by what fills it, 
 
 <p align="center"><img src="assets/usage.png" alt="Usage panel with limits, context breakdown and cache status" width="420"></p>
 
-The savings counter estimates what Graft, the optimizer, Graphify, Ponytail, caveman mode and Command Deck itself kept out of the context.
+The savings counter estimates what Graft, the optimizer, Graphify, Ponytail, caveman mode and Command Deck itself kept out of the context. The last row, under a line, is the CMD Deck total: Command Deck's own savings plus every tool above, an educated guess like the rows it adds up.
 
 <p align="center"><img src="assets/savings.png" alt="Token saved today panel with estimated tokens and dollars per source" width="420"></p>
 

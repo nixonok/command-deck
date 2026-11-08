@@ -1,6 +1,6 @@
 {
   "name": "command-deck",
-  "version": "1.4.0",
+  "version": "1.4.1",
   "description": "Plan with the right model per task, kanban board, usage and git panel, caveman toggle, handoff memory.",
   "types": "./types/index.d.ts",
   "userConfig": {
@@ -129,6 +129,12 @@
       "title": "Recent messages shown to the planner",
       "description": "How many of the latest chat messages the planner reads so it does not ask what the chat already settled. 0 sends none.",
       "default": 5
+    },
+    "judgeBoard": {
+      "type": "number",
+      "title": "Close settled board cards after each answer (1 on, 0 off)",
+      "description": "When an answer leaves cards in Todo without Done/Skip lines, a small Haiku call reads it and closes the cards it says are done or dropped.",
+      "default": 1
     },
     "plannerChatChars": {
       "type": "number",

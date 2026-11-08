@@ -514,6 +514,32 @@ test('board follows agents and replies without a plan: agent card Doing then don
   expect(await board()).toContain('2/2 done')
 })
 
+test('token saved: CMD Deck sums the deck and every tool, shown last under a line', async ($, on) => {
+  const s = { ...L.ZERO_SAVINGS, graft: 1000, optimizer: 200, graphify: 30, caveman: 4, ponytail: 5, keepwarm: 100, fresh: 50, routing: 10, tools: 1 }
+  expect(L.totalSaved(s)).toBe(1400)
+  expect(L.totalSaved(s, 600)).toBe(2000)
+  expect(L.totalSaved(L.ZERO_SAVINGS)).toBe(0)
+  mock.clock(on, { now: 1_791_868_793_562 })
+  mock.store(on, {})
+  on('session.start', () => ({ cwd: '/tmp/x' }) as any)
+  on('command.register', () => ({ value: undefined }) as any)
+  on('ui.open', () => ({ value: undefined }) as any)
+  on('process.run', () => ({ value: { stdout: '', stderr: '', code: 1 } }) as any)
+  on('session.usage', () => ({ value: undefined }) as any)
+  on('fs.write', () => ({ value: undefined }) as any)
+  on('fs.exists', () => ({ value: false }) as any)
+  await $.session.start({ cwd: '/tmp/x', surface: null, isInteractive: false } as any)
+  const ui = await $.ui.mount({ plugin: 'command-deck', surface: 'terminal', component: 'Pane', props: {}, requestId: 'command-deck' } as any)
+  const all = (await ui.findAll({ type: 'Text' })).map(x => x.text).join(' | ')
+  await ui.unmount()
+  const section = all.slice(all.indexOf('TOKEN SAVED TODAY'))
+  const line = section.indexOf('────')
+  expect(line).toBeGreaterThan(section.indexOf('Graphify'))
+  expect(section.indexOf('CMD Deck')).toBeGreaterThan(line)
+  expect(section.slice(0, line)).not.toContain('CMD Deck')
+  expect(section).toContain('deck + tools')
+})
+
 test('board judge: an answer without Done/Skip lines still closes the cards it settles', async ($, on) => {
   mock.clock(on, { now: 1_791_868_793_562 })
   mock.store(on, { 'deck.tasks': [card(1, 'Confirm /ws rate rule live in Cloudflare'), card(2, 'Smoke test prod /ws and /live'), card(3, 'Write release notes')] })

@@ -1676,6 +1676,7 @@ export const register: Register = (on, options) => {
       .filter(([, st]) => st === 'missing')
       .map(([t]) => t)
     const rtkSaved = rtk?.saved ?? 0
+    const savedDollars = L.dollars(savings, inPrice, outPrice) + (rtkSaved * inPrice) / 1_000_000
     const savingsWin = win(
       '✚',
       'TOKEN SAVED TODAY',
@@ -1683,15 +1684,24 @@ export const register: Register = (on, options) => {
       [
         saveRow('Graft', savings.graft, inPrice, 'green', graftState, 'graft'),
         saveRow('Caveman', savings.caveman, outPrice, 'yellow', L.toolState('caveman', limits.servers, limits.skillTokens, savings.caveman, limits.skills, cave)),
-        saveRow('CMD Deck', L.deckSaved(savings), inPrice, 'magenta'),
         saveRow('Optimizer', savings.optimizer, inPrice, 'green', L.toolState('optimizer', limits.servers, limits.skillTokens, savings.optimizer, limits.skills)),
         saveRow('RTK', rtkSaved, inPrice, 'cyan', rtk?.state),
         saveRow('Ponytail', savings.ponytail, outPrice, 'cyan', L.toolState('ponytail', undefined, undefined, savings.ponytail, limits.skills)),
         saveRow('Graphify', savings.graphify, inPrice, 'blue', graphifyState, 'graphify'),
         saveRow('TokenEcon.', 0, inPrice, 'blue', tokenEconState, 'tokeneconomizer'),
         missing.length > 2 ? <Button key="install-all" label={`Install all (${missing.length})`} onPress={() => askInstall(missing)} /> : null,
+        <Text key="total-line" dimColor wrap="truncate-end">
+          {'─'.repeat(40)}
+        </Text>,
+        <Text key="total" wrap="truncate-end">
+          <Text bold>{'CMD Deck'.padEnd(11)}</Text>
+          <Text color="magenta" bold>
+            {L.compact(L.totalSaved(savings, rtkSaved)).padStart(6)}
+          </Text>
+          <Text dimColor>{`  tokens, deck + tools  ≈ $${savedDollars.toFixed(2)} est.`}</Text>
+        </Text>,
       ],
-      `≈ $${(L.dollars(savings, inPrice, outPrice) + (rtkSaved * inPrice) / 1_000_000).toFixed(2)} est.`,
+      `≈ $${savedDollars.toFixed(2)} est.`,
       'SAVED',
     )
 
