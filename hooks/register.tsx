@@ -869,29 +869,29 @@ async function saveLearn($: any) {
 }
 
 export const register: Register = (on, options) => {
-  cfg = (options ?? {}) as Record<string, unknown>
+  cfg = (options ?? {}) as Record<string, unknown>;
 
-    on('session.start', async ($, e, next) => {
-    await $.command.register({ name: 'command-deck', description: 'Command Deck: board, usage, git. Subcommands: auto, cave, clean, autoclean, run, fresh, handoff, compact, done N, clear', argumentHint: '[auto|cave|clean|autoclean|run|fresh|handoff|compact|done N|clear]' })
-    await $.command.register({ name: 'command-deck-cave', description: 'Caveman mode: short answers. on, off, or toggle', argumentHint: '[on|off]' })
-    await $.command.register({ name: 'command-deck-plan', description: 'Sharpen a request, ask what is unclear, split it into tasks per model', argumentHint: '<what you want done>' })
-    await load($)
-    // autoStart (setting, default on): every new chat opens the deck pane and switches auto-plan on
-    if (opt('autoStart', 1) > 0) {
-      await update($, autoA, () => true)
-      await $.store.set('deck.auto', true)
-      void $.ui.open({ id: PANE, title: 'Command Deck' })
-    }
-    void refreshGit($)
-    void refreshUsage($)
-    void refreshRtk($, true)
-    $.clock.every(30_000, () => void refreshGit($))
-    $.clock.every(30_000, () => void refreshRtk($))
-    $.clock.every(60_000, () => void warmTick($))
-    await update($, tipA, () => Math.floor(Math.random() * L.TIPS.length))
-    $.clock.every(L.TIP_ROTATE_MS, () => void update($, tipA, (n: number) => n + 1))
-    return next(e)
-  })
+  on('session.start', async ($, e, next) => {
+  await $.command.register({ name: 'command-deck', description: 'Command Deck: board, usage, git. Subcommands: auto, cave, clean, autoclean, run, fresh, handoff, compact, done N, clear', argumentHint: '[auto|cave|clean|autoclean|run|fresh|handoff|compact|done N|clear]' })
+  await $.command.register({ name: 'command-deck-cave', description: 'Caveman mode: short answers. on, off, or toggle', argumentHint: '[on|off]' })
+  await $.command.register({ name: 'command-deck-plan', description: 'Sharpen a request, ask what is unclear, split it into tasks per model', argumentHint: '<what you want done>' })
+  await load($)
+  // autoStart (setting, default on): every new chat opens the deck pane and switches auto-plan on
+  if (opt('autoStart', 1) > 0) {
+    await update($, autoA, () => true)
+    await $.store.set('deck.auto', true)
+    void $.ui.open({ id: PANE, title: 'Command Deck' })
+  }
+  void refreshGit($)
+  void refreshUsage($)
+  void refreshRtk($, true)
+  $.clock.every(30_000, () => void refreshGit($))
+  $.clock.every(30_000, () => void refreshRtk($))
+  $.clock.every(60_000, () => void warmTick($))
+  await update($, tipA, () => Math.floor(Math.random() * L.TIPS.length))
+  $.clock.every(L.TIP_ROTATE_MS, () => void update($, tipA, (n: number) => n + 1))
+  return next(e)
+})
 
   // ------------------------------------------------------------ commands
   on('command.run', { command: 'command-deck-cave' }, async ($, e) => {
