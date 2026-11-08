@@ -1643,8 +1643,9 @@ export const register: Register = (on, options) => {
     const inPrice = opt('inputDollarsPerMTok', 3)
     const outPrice = opt('outputDollarsPerMTok', 15)
     const askInstall = (tools: L.ToolName[]) => void $.prompt.submit({ text: L.installPrompt(tools) })
+    // an installed tool shows once it has saved something; a missing one shows so it can be installed
     const saveRow = (label: string, tokens: number, price: number, color: string, state: L.ToolState = 'active', tool?: L.ToolName) =>
-      state === 'missing' ? (
+      state !== 'missing' && tokens <= 0 ? null : state === 'missing' ? (
         tool && L.TOOL_INFO[tool] ? (
           <Box gap={1}>
             <Text wrap="truncate-end" dimColor>

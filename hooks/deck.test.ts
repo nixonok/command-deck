@@ -538,6 +538,9 @@ test('token saved: CMD Deck sums the deck and every tool, shown last under a lin
   expect(section.indexOf('CMD Deck')).toBeGreaterThan(line)
   expect(section.slice(0, line)).not.toContain('CMD Deck')
   expect(section).toContain('deck + tools')
+  // installed tools that saved nothing yet are hidden; missing ones stay, to be installed
+  expect(section.slice(0, line)).not.toMatch(/Caveman|Optimizer/)
+  expect(section.slice(0, line)).toMatch(/Ponytail\s+\(Not Installed\)/)
 })
 
 test('board judge: an answer without Done/Skip lines still closes the cards it settles', async ($, on) => {
