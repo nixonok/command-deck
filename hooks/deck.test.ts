@@ -4,6 +4,19 @@ import * as G from './guidelines'
 import * as L from './lib'
 import type { Task } from '../types'
 
+test('parseJudge: closes only the asked cards, done wins over skip, junk marks nothing', () => {
+  const open: Task[] = [
+    { id: 1, title: 'Confirm /ws rate rule live in Cloudflare', tier: 'sonnet', why: '', status: 'todo', tokens: 0 },
+    { id: 2, title: 'Smoke test prod /ws and /live', tier: 'haiku', why: '', status: 'todo', tokens: 0 },
+  ]
+  expect(L.parseJudge('{"done":[1],"skip":[2,9]}', open)).toEqual({ todo: [], done: [open[0]!.title], skip: [open[1]!.title] })
+  expect(L.parseJudge('Sure! ```json\n{"done":[2],"skip":[2]}\n```', open)).toEqual({ todo: [], done: [open[1]!.title], skip: [] })
+  expect(L.parseJudge('{"done":"1"}', open)).toEqual({ todo: [], done: [], skip: [] })
+  expect(L.parseJudge('no json here', open)).toEqual({ todo: [], done: [], skip: [] })
+  expect(L.parseJudge('{broken', open)).toEqual({ todo: [], done: [], skip: [] })
+  expect(L.judgePrompt('All pushed.', open)).toContain('2: Smoke test prod /ws and /live')
+})
+
 test('routing: mechanical work goes to Haiku, risky work to Opus, the rest to Sonnet', () => {
   expect(L.tierOf('Rename the field mCount to mTotal')).toBe('haiku')
   expect(L.tierOf('Fix the typo in the settings label')).toBe('haiku')
@@ -499,6 +512,35 @@ test('board follows agents and replies without a plan: agent card Doing then don
   expect(await board()).toMatch(/DONE 1 \| 1 \| ✔ \[Haiku\] Find board sync hooks/)
   await $.turn.complete({ answer: 'Registered.\nDone: Register GA dimensions' } as any)
   expect(await board()).toContain('2/2 done')
+})
+
+test('board judge: an answer without Done/Skip lines still closes the cards it settles', async ($, on) => {
+  mock.clock(on, { now: 1_791_868_793_562 })
+  mock.store(on, { 'deck.tasks': [card(1, 'Confirm /ws rate rule live in Cloudflare'), card(2, 'Smoke test prod /ws and /live'), card(3, 'Write release notes')] })
+  on('session.start', () => ({ cwd: '/tmp/x' }) as any)
+  on('command.register', () => ({ value: undefined }) as any)
+  on('ui.open', () => ({ value: undefined }) as any)
+  on('process.run', () => ({ value: { stdout: '', stderr: '', code: 1 } }) as any)
+  on('session.usage', () => ({ value: undefined }) as any)
+  on('fs.write', () => ({ value: undefined }) as any)
+  on('fs.exists', () => ({ value: false }) as any)
+  on('turn.complete', () => ({ text: '' }) as any)
+  let judged!: () => void
+  const asked = new Promise<void>(r => (judged = r))
+  on('model.complete', () => {
+    setTimeout(judged, 0)
+    return { value: { isAnswered: true, text: '{"done":[1],"skip":[2]}', usage: { input_tokens: 10, output_tokens: 5 } } } as any
+  })
+  await $.session.start({ cwd: '/tmp/x', surface: null, isInteractive: false } as any)
+  await $.turn.complete({ answer: 'Rule is live. The /ws test was denied.', reason: 'answer' } as any)
+  await asked
+  await new Promise(r => setTimeout(r, 20))
+  const ui = await $.ui.mount({ plugin: 'command-deck', surface: 'terminal', component: 'Pane', props: {}, requestId: 'command-deck' } as any)
+  const all = (await ui.findAll({ type: 'Text' })).map(x => x.text).join(' | ')
+  await ui.unmount()
+  expect(all).toContain('TODO 1')
+  expect(all).toContain('Write release notes')
+  expect(all).toMatch(/DONE 2/)
 })
 
 test('token saved: each tool reads active, not active or not installed', () => {

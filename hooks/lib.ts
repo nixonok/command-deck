@@ -733,5 +733,32 @@ export function applyMarks(tasks: Task[], marks: { todo: string[]; done: string[
   return out
 }
 
+// the main chat often forgets its Done:/Skip: lines, so a cheap model reads the answer and closes the cards it settles
+export const JUDGE_SYSTEM = `You keep a task board true. You get the assistant's final answer and the open cards (one per line, "id: title").
+Return ONLY one JSON object, no prose: {"done":number[],"skip":number[]}
+- done: the answer says this card's work is finished (done, fixed, pushed, deployed, verified, answered).
+- skip: the answer says this card's work was not done and is not being done now (blocked, denied, dropped, left to the person, not needed).
+- Leave out any card the answer does not settle, or that work still running will settle. When unsure, leave it out.`
+
+export const judgePrompt = (answer: string, cards: Task[]): string =>
+  `Open cards:\n${cards.map(t => `${t.id}: ${t.title}`).join('\n')}\n\nFinal answer:\n${answer.slice(-6000)}`
+
+/** The judge's reply as board marks (titles), keeping only ids of the cards it was asked about; a broken reply marks nothing. */
+export function parseJudge(raw: string, cards: Task[]): { todo: string[]; done: string[]; skip: string[] } {
+  const out = { todo: [] as string[], done: [] as string[], skip: [] as string[] }
+  const start = raw.indexOf('{')
+  const end = raw.lastIndexOf('}')
+  if (start < 0 || end <= start) return out
+  try {
+    const data = JSON.parse(raw.slice(start, end + 1))
+    const titles = (ids: unknown) => (Array.isArray(ids) ? cards.filter(c => ids.includes(c.id)).map(c => c.title) : [])
+    out.done = titles(data?.done)
+    out.skip = titles(data?.skip).filter(t => !out.done.includes(t))
+  } catch {
+    // not JSON: nothing is marked, the cards stay as they are
+  }
+  return out
+}
+
 /** The card status a TaskUpdate status means (`deleted` and unknown values change nothing). */
 export const statusOfTask = (status: unknown): Status | undefined => TODO_STATUS[String(status)]

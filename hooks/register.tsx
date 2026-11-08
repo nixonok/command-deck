@@ -361,6 +361,28 @@ async function analyze($: any, ask: string, answers: string[], questions: string
   return null
 }
 
+/** Closes the open cards the turn's answer settles, when the main chat left out its Done:/Skip: lines. */
+async function judgeBoard($: any, answer: string, open: Task[]): Promise<void> {
+  try {
+    const r = await $.model.complete({ model: 'haiku', system: L.JUDGE_SYSTEM, prompt: L.judgePrompt(answer, open), maxTokens: 200, effort: 'low', timeoutMs: 30000 })
+    if (!r.isAnswered) return
+    await addUsage($, 'haiku', { ...r.usage, model: 'haiku' })
+    const marks = L.parseJudge(r.text, open)
+    if (!marks.done.length && !marks.skip.length) return
+    const now = await $.clock.now()
+    // only the same cards, still in Todo: a new plan reuses ids, and a subagent may have picked one up meanwhile
+    const asked = (t: Task) => t.status === 'todo' && open.some(o => o.id === t.id && o.title === t.title)
+    await update($, tasksA, (l: Task[]) =>
+      l.map(t => (!asked(t) ? t : marks.done.includes(t.title) ? L.setCard(t, 'done', now) : marks.skip.includes(t.title) ? L.setCard(t, 'skipped', now) : t)),
+    )
+    if (!(await read($, tasksA)).some(t => t.status === 'todo')) isAutoBoard = false
+    await save($)
+    await writeProgress($)
+  } catch (err) {
+    console.error('[command-deck] board judge failed:', err)
+  }
+}
+
 const planText = (plan: Plan, tasks: Task[]): string =>
   [
     'Prompt ready:',
@@ -1208,6 +1230,9 @@ export const register: Register = (on, options) => {
       if (!left.some(t => t.status === 'doing')) stopSpin()
       if (!left.some(t => t.status === 'todo')) isAutoBoard = false
       await writeProgress($)
+      const open = left.filter(t => t.status === 'todo')
+      // in the background: the answer is already on screen, and a slow or failed call only leaves the cards as they were
+      if (open.length && (e as { reason?: string }).reason === 'answer' && opt('judgeBoard', 1) > 0) void judgeBoard($, String((e as { answer?: string }).answer ?? ''), open)
     }
     if (!e.agentId && usage && L.toolAvailable('ponytail', undefined, undefined, 0, (await read($, limitsA)).skills)) {
       await addSaving('ponytail', L.cavemanSaved(usage.output_tokens ?? 0, opt('ponytailRatio', 0.45)), $)
