@@ -1698,7 +1698,10 @@ export const register: Register = (on, options) => {
           <Text color="magenta" bold>
             {L.compact(L.totalSaved(savings, rtkSaved)).padStart(6)}
           </Text>
-          <Text dimColor>{`  tokens, deck + tools  ≈ $${savedDollars.toFixed(2)} est.`}</Text>
+          <Text dimColor>{'  tokens'}</Text>
+        </Text>,
+        <Text key="total-note" dimColor wrap="truncate-end">
+          {`${''.padEnd(11)}deck + tools  ≈ $${savedDollars.toFixed(2)} est.`}
         </Text>,
       ],
       `≈ $${savedDollars.toFixed(2)} est.`,
