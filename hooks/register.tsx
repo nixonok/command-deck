@@ -1617,12 +1617,22 @@ export const register: Register = (on, options) => {
     // ---------------- savings
     const inPrice = opt('inputDollarsPerMTok', 3)
     const outPrice = opt('outputDollarsPerMTok', 15)
-    const saveRow = (label: string, tokens: number, price: number, color: string, state: L.ToolState = 'active') =>
+    const askInstall = (tools: L.ToolName[]) => void $.prompt.submit({ text: L.installPrompt(tools) })
+    const saveRow = (label: string, tokens: number, price: number, color: string, state: L.ToolState = 'active', tool?: L.ToolName) =>
       state === 'missing' ? (
-        <Text wrap="truncate-end" dimColor>
-          {label.padEnd(11)}
-          {'(Not Installed)'}
-        </Text>
+        tool && L.TOOL_INFO[tool] ? (
+          <Box gap={1}>
+            <Text wrap="truncate-end" dimColor>
+              {label.padEnd(11)}
+            </Text>
+            <Button key={`install-${tool}`} label="Install" onPress={() => askInstall([tool])} />
+          </Box>
+        ) : (
+          <Text wrap="truncate-end" dimColor>
+            {label.padEnd(11)}
+            {'(Not Installed)'}
+          </Text>
+        )
       ) : (
         <Text wrap="truncate-end">
           <Text dimColor>{label.padEnd(11)}</Text>
@@ -1632,19 +1642,29 @@ export const register: Register = (on, options) => {
           {state === 'inactive' ? <Text color="yellow">{'  (Not Active)'}</Text> : <Text dimColor>{`  tokens  ≈ $${((tokens * price) / 1_000_000).toFixed(2)}`}</Text>}
         </Text>
       )
+    const graftState = L.toolState('graft', limits.servers, limits.skillTokens, savings.graft, limits.skills)
+    const graphifyState = L.toolState('graphify', limits.servers, undefined, savings.graphify, limits.skills)
+    const tokenEconState = L.toolState('tokeneconomizer', limits.servers, undefined, 0, limits.skills)
+    const missing = (
+      [['graft', graftState], ['graphify', graphifyState], ['tokeneconomizer', tokenEconState]] as [L.ToolName, L.ToolState][]
+    )
+      .filter(([, st]) => st === 'missing')
+      .map(([t]) => t)
     const rtkSaved = rtk?.saved ?? 0
     const savingsWin = win(
       '✚',
       'TOKEN SAVED TODAY',
       'yellow',
       [
-        saveRow('Graft', savings.graft, inPrice, 'green', L.toolState('graft', limits.servers, limits.skillTokens, savings.graft, limits.skills)),
+        saveRow('Graft', savings.graft, inPrice, 'green', graftState, 'graft'),
         saveRow('Caveman', savings.caveman, outPrice, 'yellow', L.toolState('caveman', limits.servers, limits.skillTokens, savings.caveman, limits.skills, cave)),
         saveRow('CMD Deck', L.deckSaved(savings), inPrice, 'magenta'),
         saveRow('Optimizer', savings.optimizer, inPrice, 'green', L.toolState('optimizer', limits.servers, limits.skillTokens, savings.optimizer, limits.skills)),
         saveRow('RTK', rtkSaved, inPrice, 'cyan', rtk?.state),
         saveRow('Ponytail', savings.ponytail, outPrice, 'cyan', L.toolState('ponytail', undefined, undefined, savings.ponytail, limits.skills)),
-        saveRow('Graphify', savings.graphify, inPrice, 'blue', L.toolState('graphify', limits.servers, undefined, savings.graphify, limits.skills)),
+        saveRow('Graphify', savings.graphify, inPrice, 'blue', graphifyState, 'graphify'),
+        saveRow('TokenEcon.', 0, inPrice, 'blue', tokenEconState, 'tokeneconomizer'),
+        missing.length > 2 ? <Button key="install-all" label={`Install all (${missing.length})`} onPress={() => askInstall(missing)} /> : null,
       ],
       `≈ $${(L.dollars(savings, inPrice, outPrice) + (rtkSaved * inPrice) / 1_000_000).toFixed(2)} est.`,
       'SAVED',

@@ -232,11 +232,13 @@ export function skillNames(list: { name?: unknown; pluginName?: unknown }[] | un
   return [...out]
 }
 
+export type ToolName = 'graft' | 'optimizer' | 'caveman' | 'ponytail' | 'graphify' | 'tokeneconomizer'
+
 // A tool counts as available when its MCP server is connected or it already saved something. With no server data yet
 // we assume available, so a missing breakdown never shows a false "not available". Caveman is a skill with no install
 // signal, so it reads as missing only when the chat loaded no skills at all and nothing was saved.
 export const toolAvailable = (
-  tool: 'graft' | 'optimizer' | 'caveman' | 'ponytail' | 'graphify',
+  tool: ToolName,
   servers: { server: string }[] | undefined,
   skillTokens: number | undefined,
   saved: number,
@@ -244,17 +246,49 @@ export const toolAvailable = (
 ): boolean => {
   if (saved > 0) return true
   // Ponytail and Graphify are skills: installed only when the chat lists one (Graphify also ships an MCP server)
-  if (tool === 'ponytail' || tool === 'graphify') return Boolean(skills?.includes(tool) || servers?.some(sv => norm(sv.server) === tool))
+  if (tool === 'ponytail' || tool === 'graphify' || tool === 'tokeneconomizer') return Boolean(skills?.includes(tool) || servers?.some(sv => norm(sv.server) === tool))
   if (tool === 'caveman') return skillTokens === undefined || skillTokens > 0
   if (!servers) return true
   const want = tool === 'graft' ? 'graft' : 'token_optimizer'
   return servers.some(sv => norm(sv.server) === want)
 }
 
+/** What each installable tool is, where it lives, and the steps any Claude can follow to install it. */
+export const TOOL_INFO: Partial<Record<ToolName, { label: string; what: string; link: string; steps: string }>> = {
+  graft: {
+    label: 'Graft',
+    what: 'indexes the repo into a graph so Claude finds code with exact file:line instead of grepping',
+    link: 'https://www.npmjs.com/package/@nanonets/graft',
+    steps: 'Run `npm i -g @nanonets/graft@latest`, then read the package README for how to register its MCP server and skill. Restart Claude Code.',
+  },
+  graphify: {
+    label: 'Graphify',
+    what: 'turns code, docs and papers into a knowledge graph Claude can query (/graphify)',
+    link: 'https://github.com/Graphify-Labs/graphify',
+    steps: 'Run `uv tool install graphifyy` (PyPI name has two y; or `pipx install graphifyy`), then `graphify install` to register the skill. Restart Claude Code.',
+  },
+  tokeneconomizer: {
+    label: 'TokenEconomizer',
+    what: 'Microsoft plugin that cuts agent cost: repo facts, tool pruning and loop guards',
+    link: 'https://github.com/microsoft/TokenEconomizer',
+    steps:
+      'Python 3.10+ is needed. In a folder to keep the clone: `git clone https://github.com/microsoft/TokenEconomizer.git`, `claude plugin marketplace add "$PWD/TokenEconomizer"`, `claude plugin install tokeneconomizer@tokeneconomizer`. Leave the clone in place. Start claude, trust the folder, run `/tokeneconomizer:status`.',
+  },
+}
+
+/** One prompt a fresh Claude can act on to install the given tools. Never invents commands: unknown steps point at the link. */
+export function installPrompt(tools: ToolName[]): string {
+  const rows = tools.flatMap(t => {
+    const i = TOOL_INFO[t]
+    return i ? [`- ${i.label}: ${i.what}.\n  Source: ${i.link}\n  Install: ${i.steps}`] : []
+  })
+  return `Install these tools for me. Read each source page first and use its own install steps; ask before anything that needs a password.\n${rows.join('\n')}\nWhen done, tell me to restart Claude Code.`
+}
+
 export type ToolState = 'active' | 'inactive' | 'missing'
 /** Installed and running, installed but off, or not installed. `isOn` is the tool's own switch (Caveman's toggle). */
 export function toolState(
-  tool: 'graft' | 'optimizer' | 'caveman' | 'ponytail' | 'graphify',
+  tool: ToolName,
   servers: { server: string }[] | undefined,
   skillTokens: number | undefined,
   saved: number,

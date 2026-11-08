@@ -345,6 +345,14 @@ test('board sync: a reworded long title is the same card, a short one must match
   expect(L.newTodoTitles([{ content: 'Fix done tasks staying in ToDo today' }, { content: 'Brand new step' }], ['Fix done tasks staying in ToDo'])).toEqual(['Brand new step'])
 })
 
+test('install prompt names each tool, its link and steps; unknown tools are skipped', () => {
+  const t = L.installPrompt(['tokeneconomizer', 'caveman'])
+  expect(t).toContain('https://github.com/microsoft/TokenEconomizer')
+  expect(t).toContain('claude plugin install tokeneconomizer@tokeneconomizer')
+  expect(t).not.toContain('Caveman')
+  expect(L.installPrompt(['graft', 'graphify'])).toContain('uv tool install graphifyy')
+})
+
 test('optional tools: Ponytail and Graphify show only when installed or already counted', () => {
   expect(L.toolAvailable('ponytail', undefined, undefined, 0, undefined)).toBe(false)
   expect(L.toolAvailable('ponytail', undefined, undefined, 0, ['ponytail'])).toBe(true)
@@ -399,15 +407,20 @@ test('token saved: a Graphify query counts and its row turns live; a missing too
   const rows = async () => {
     const ui = await $.ui.mount({ plugin: 'command-deck', surface: 'terminal', component: 'Pane', props: {}, requestId: 'command-deck' } as any)
     const all = (await ui.findAll({ type: 'Text' })).map(x => x.text).join(' | ')
+    const buttons = (await ui.findAll({ type: 'Button' })).map(x => (x as any).props?.label ?? x.text).join(' | ')
     await ui.unmount()
-    return all
+    return all + ' || ' + buttons
   }
-  expect(await rows()).toMatch(/Graphify\s+\(Not Installed\)/)
+  // a missing tool offers an Install button; Install all needs more than two missing (here Graft reads as present)
+  const first = await rows()
+  expect(first).toMatch(/Graphify\s+\|/)
+  expect(first.split(' || ')[1]).toMatch(/Install \| Install/)
+  expect(first).not.toContain('Install all')
   await $.tool.call({ tool: 'Bash', input: { command: 'graphify install' } } as any)
-  expect(await rows()).toMatch(/Graphify\s+\(Not Installed\)/)
+  expect((await rows()).split(' || ')[1]).toMatch(/Install \| Install/)
   await $.tool.call({ tool: 'Bash', input: { command: 'graphify query "how does auth work"' } } as any)
   const all = await rows()
-  expect(all).not.toMatch(/Graphify\s+\(Not Installed\)/)
+  expect(all.split(' || ')[1]).not.toMatch(/Install \| Install/)
   expect(all).toContain('1.2k')
   expect(all).toMatch(/Ponytail\s+\(Not Installed\)/)
   // rtk is not on this test's PATH (process.run fails), so its row says so
