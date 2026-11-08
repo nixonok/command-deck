@@ -75,9 +75,7 @@ Update later with `claude plugin marketplace update command-deck-market`, then r
 
 ### 2. From git, no marketplace
 
-```bash
-git clone https://github.com/nixonok/command-deck.git ~/command-deck
-```
+Download the repository from https://github.com/nixonok/command-deck (a zip or a clone) into `~/command-deck`.
 
 Load it for one session:
 
@@ -181,6 +179,20 @@ Only under `.claude/deck/` in your project: `rules.md` (your rules for new chats
 Every savings row shows its tool's state. Graft and token-optimizer count as installed when their MCP servers are connected (the Graft skill without its server reads Not Active). Caveman, Ponytail and Graphify count as installed when the chat lists their skills (or the Graphify MCP server); Caveman reads Not Active while its toggle is off. Their figures are estimates. RTK's row comes from `rtk gain` (today's saved tokens) and `rtk verify` (Not Active when its Claude Code hook is not registered).
 
 The board follows the chat's own task list: new tasks from `TodoWrite` or `TaskCreate` (or `Todo:` lines in a reply) become cards, and a card moves to Doing or Done when its task is started or completed (or a `Done:` line names it; a `Skip:` line closes it as skipped). Every subagent shows as its own card.
+
+## What the mod does (for reviewers)
+
+Command Deck is a mod, so it uses powers a plain skill does not. Each one, and why:
+
+- **Writes files.** Only under `.claude/deck/` in the project (rules, handoffs, progress notes, history, tip files). The paths are fixed text in `hooks/register.tsx`. It never edits build, start-up, settings or instruction files.
+- **Starts programs.** `git` (status and refs for the git panel), `rtk` (`gain` and `verify`, only to show the RTK savings row; absent means the row says Not Installed), and `open` / `xdg-open` / `explorer` to show the `.claude/deck/` folder. Each command is fixed text; nothing from the chat is run as a command.
+- **Reads the conversation, sends nothing out.** It reads chat and usage data to fill the board and savings. It sends no data to any server of its own; the only model calls are the ones Claude Code makes (including the Haiku agents below).
+- **Starts agents.** The planner and the board judge run as Haiku agents. They get the user's request, up to `plannerChatMessages` recent messages (each cut to `plannerChatChars` characters) and the task titles.
+- **Submits prompts.** The plan, a handoff and a new-topic message are submitted into the chat as the user's own prompt, so the user sees them. Nothing is hidden.
+- **Runs `/clear`.** Handoff+/Clean and the new-topic move write a handoff file first and then clear the chat. Auto Clean and the new-topic move can be turned off in the plugin options (`autoFresh`, `autoFreshPct`).
+- **Changes agent model.** The `agent.spawn` hook sets `model: haiku` on Explore agents and on agents for a Haiku-tier board card, when the deck's auto switch is on. It does not change permission modes, and it passes every other event on unchanged.
+- **Credentials.** It reads no keys or tokens. The only local reads are the project's `.claude/deck/` files and the tool output above.
+- **Install help.** The Install buttons in the savings pane only submit a prompt that names each tool, its source link and its steps. They run nothing themselves.
 
 ## Versioning
 

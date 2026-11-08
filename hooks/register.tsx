@@ -78,10 +78,10 @@ async function archive($: any) {
     const done = (await read($, tasksA)).filter(t => t.status === 'done' || t.status === 'failed' || t.status === 'skipped')
     if (!done.length) return
     const have = await read($, histA)
-    const seen = new Set(have.map(h => `${h.at}|${h.title}`))
+    const seen = new Set(have.map(entry => `${entry.at}|${entry.title}`))
     const add = done
       .map(t => ({ at: t.endedAt ?? t.startedAt ?? now, title: t.title, tier: t.tier, status: t.status as string, tokens: t.tokens }))
-      .filter(h => !seen.has(`${h.at}|${h.title}`))
+      .filter(entry => !seen.has(`${entry.at}|${entry.title}`))
     if (!add.length) return
     const next = [...have, ...add].slice(-200)
     await update($, histA, () => next)
@@ -97,7 +97,7 @@ const histFile = () => `${DIR}/history.md`
 async function appendHistoryFile($: any, items: { at: number; title: string; tier: string; status: string }[]) {
   try {
     const prev = (await $.fs.exists(histFile())) ? String(await $.fs.read(histFile())) : '# Command Deck history\n\n'
-    const lines = items.map(h => `- ${new Date(h.at).toISOString().slice(0, 16).replace('T', ' ')} [${h.tier}] ${h.status}: ${h.title}`)
+    const lines = items.map(entry => `- ${new Date(entry.at).toISOString().slice(0, 16).replace('T', ' ')} [${entry.tier}] ${entry.status}: ${entry.title}`)
     await $.fs.write(histFile(), `${prev.endsWith('\n') ? prev : `${prev}\n`}${lines.join('\n')}\n`)
   } catch {
     /* history is a convenience */
