@@ -1702,7 +1702,7 @@ export const register: Register = (on, options) => {
           <Text dimColor>{'  tokens'}</Text>
         </Text>,
         <Text key="total-note" dimColor wrap="truncate-end">
-          {`${''.padEnd(11)}deck + tools  ≈ $${savedDollars.toFixed(2)} est.`}
+          {`deck + tools  ≈ $${savedDollars.toFixed(2)} est.`}
         </Text>,
       ],
       `≈ $${savedDollars.toFixed(2)} est.`,
