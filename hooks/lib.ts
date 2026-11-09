@@ -51,14 +51,25 @@ Rules:
 - code=true when any step changes code, tests, scenes, assets or build config; false when the work is only writing, research or an answer in chat.
 - parallel=true only when the task edits different files from the tasks next to it and needs nothing they produce; those run at the same time. Split mechanical edits per file so they can run in parallel on Haiku.`
 
-export function plannerPrompt(ask: string, answers: string[], questions: string[] = [], recent: string[] = []): string {
+export function plannerPrompt(ask: string, answers: string[], questions: string[] = [], recent: string[] = [], media = 0): string {
   const chat = recent.length ? `\n\nRecent conversation (oldest first):\n${recent.map(r => `- ${r}`).join('\n')}` : ''
   const qa = questions.length
     ? `\n\nQuestions already asked and the answers (the answers below were sent in order, each one after the questions):\n${questions.map((q, i) => `- Q${i + 1}: ${q}`).join('\n')}\n${answers.map(a => `- Answer: ${a}`).join('\n')}`
     : answers.length
       ? `\n\nAnswers already given:\n${answers.map(a => `- ${a}`).join('\n')}`
       : ''
-  return `Request:\n${ask}${chat}${qa}`
+  const seen = media > 0
+    ? `\n\nThe person attached ${media} image(s) or file(s) you cannot see; the agent doing the work sees them. Assume they show whatever the request points at (layout, text, the wanted result): never ask about them or about anything they could answer.`
+    : ''
+  return `Request:\n${ask}${seen}${chat}${qa}`
+}
+
+/**
+ * Whether the planner's questions may hold the message back. Never with attachments: a held message loses its
+ * images (a plugin's own prompt cannot carry them), so the agent would never see them. One round at most.
+ */
+export function mayAsk(plan: Plan, isPending: boolean, media: number): boolean {
+  return !plan.isClear && !isPending && media === 0 && plan.questions.length > 0
 }
 
 export function parsePlan(raw: string): Plan | null {

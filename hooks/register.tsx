@@ -342,12 +342,12 @@ async function projectName($: any): Promise<string> {
   }
 }
 
-async function analyze($: any, ask: string, answers: string[], questions: string[] = []): Promise<Plan | null> {
+async function analyze($: any, ask: string, answers: string[], questions: string[] = [], media = 0): Promise<Plan | null> {
   for (const model of ['haiku', 'sonnet']) {
     const r = await $.model.complete({
       model,
       system: L.PLANNER_SYSTEM,
-      prompt: L.plannerPrompt(ask, answers, questions, recent),
+      prompt: L.plannerPrompt(ask, answers, questions, recent, media),
       maxTokens: 1500,
       effort: model === 'haiku' ? 'medium' : 'low',
       timeoutMs: 60000,
@@ -795,15 +795,15 @@ async function autoPlan($: any, e: any): Promise<string | 'drop' | null> {
   }
   const ask = pending ? pending.ask : text
   const answers = pending ? [...pending.answers, text] : []
-  const plan = await analyze($, ask, answers, pending ? pending.questions : [])
+  const media = Array.isArray(e.attachments) ? e.attachments.length : 0
+  const plan = await analyze($, ask, answers, pending ? pending.questions : [], media)
   if (!plan) {
     await update($, pendingA, () => null)
     await save($)
     remember('User', text)
     return null
   }
-  // one round of questions at most: a reply to them is always enough to go on
-  if (!plan.isClear && !pending && plan.questions.length) {
+  if (L.mayAsk(plan, Boolean(pending), media)) {
     await update($, answeredA, () => false)
     await update($, pendingA, () => ({ ask, answers, questions: plan.questions.slice(0, 2) }))
     await save($)

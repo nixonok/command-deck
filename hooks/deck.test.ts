@@ -601,3 +601,12 @@ test('token saved: RTK savings come from today in its JSON, its hook from rtk ve
   expect(L.rtkHooked('FAIL  no hook registered in settings.json')).toBe(false)
   expect(L.rtkHooked('')).toBe(false)
 })
+
+test('a message with images is never held back for questions, and the planner is told they exist', () => {
+  const unclear = { isClear: false, questions: ['Which texts?'], prompt: '', tasks: [] }
+  expect(L.mayAsk(unclear, false, 0)).toBe(true)
+  expect(L.mayAsk(unclear, false, 2)).toBe(false)
+  expect(L.mayAsk(unclear, true, 0)).toBe(false)
+  expect(L.plannerPrompt('make it look like these', [], [], [], 2)).toContain('attached 2 image(s)')
+  expect(L.plannerPrompt('make it look like these', [])).not.toContain('attached')
+})
