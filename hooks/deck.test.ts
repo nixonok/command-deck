@@ -265,6 +265,13 @@ test('guidelines: core stays small and sections are picked per step and tier', (
   console.log(JSON.stringify(picks), G.guidelineExtras(arch).split(/\s+/).length, 'words')
 })
 
+test('clean-code rules: the word budget holds (at most 15% above the 1083 words before the rewrite)', () => {
+  const words = (text: string) => text.split(/\s+/).filter(Boolean).length
+  const total = words(G.CORE) + words(G.UNITY_RULES) + G.SECTIONS.reduce((n, s) => n + words(s.text), 0)
+  expect(total).toBeLessThanOrEqual(Math.round(1083 * 1.15))
+  expect(words(G.CORE)).toBeLessThan(G.CORE_MAX_WORDS)
+})
+
 test('each tier has its own working bot that blinks, sparkles in changing colors, loops, stays narrow and can hold still', () => {
   const tiers = ['opus', 'sonnet', 'haiku']
   const seqs = tiers.map(t => Array.from({ length: 24 }, (_, f) => L.workingBot(t, f)))
