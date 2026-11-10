@@ -1,6 +1,6 @@
 {
   "name": "command-deck",
-  "version": "1.4.6",
+  "version": "1.4.7",
   "icon": "./.claude-plugin/icon.png",
   "description": "Plan with the right model per task, kanban board, usage and git panel, caveman toggle, handoff memory.",
   "types": "./types/index.d.ts",
