@@ -194,6 +194,47 @@ export function workingBot(tier: string, frame: number, still = false): { face: 
   return { face: bot.faces[f % bot.faces.length]!, spark: bot.sparks[f % bot.sparks.length]!, sparkColor: RAINBOW[f % RAINBOW.length]! }
 }
 
+// ---------------------------------------------------------------- board progress
+
+// one color per card, reused on its row and its stretch of the bar, so a glance links the two
+const CARD_COLORS = ['#3b82f6', '#ec4899', '#14b8a6', '#f97316', '#8b5cf6', '#eab308', '#06b6d4', '#84cc16']
+export const FAILED_COLOR = '#ef4444'
+export const cardColor = (i: number): string => CARD_COLORS[Math.abs(Math.trunc(i)) % CARD_COLORS.length]!
+
+// a skipped card was dropped on purpose: neither work left nor work done, so it leaves the count
+const counted = (tasks: Task[]) => tasks.map((t, i) => ({ t, i })).filter(x => x.t.status !== 'skipped')
+
+/** Done counts 1, doing 0.5, todo and failed 0. An empty or all-skipped board is 0, never NaN. */
+export function boardProgress(tasks: Task[]): { done: number; total: number; ratio: number } {
+  const list = counted(tasks)
+  const done = list.filter(x => x.t.status === 'done').length
+  const doing = list.filter(x => x.t.status === 'doing').length
+  return { done, total: list.length, ratio: list.length ? (done + doing / 2) / list.length : 0 }
+}
+
+export type BoardSlice = { card: number; status: Status; cells: number }
+/** One stretch of the bar per counted card, in board order; `card` is its index in `tasks` (its color). Cells add up to `width`. */
+export function boardSlices(tasks: Task[], width: number): BoardSlice[] {
+  const list = counted(tasks)
+  const w = Number.isFinite(width) ? Math.max(0, Math.floor(width)) : 0
+  const edge = (n: number) => Math.round((n / list.length) * w)
+  return list.map((x, n) => ({ card: x.i, status: x.t.status, cells: edge(n + 1) - edge(n) }))
+}
+
+// red → amber → green, so the percent warms up as cards close
+const STOPS = [
+  [0xef, 0x44, 0x44],
+  [0xf5, 0x9e, 0x0b],
+  [0x22, 0xc5, 0x5e],
+] as const
+export function gradientAt(t: number): string {
+  const x = Math.min(1, Math.max(0, Number.isFinite(t) ? t : 0)) * (STOPS.length - 1)
+  const i = Math.min(STOPS.length - 2, Math.floor(x))
+  const a = STOPS[i]!
+  const b = STOPS[i + 1]!
+  return `#${a.map((c, k) => Math.round(c + (b[k]! - c) * (x - i)).toString(16).padStart(2, '0')).join('')}`
+}
+
 export function compact(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
   if (n >= 1_000) return `${(n / 1_000).toFixed(n >= 10_000 ? 0 : 1)}k`

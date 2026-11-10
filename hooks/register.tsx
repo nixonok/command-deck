@@ -1484,6 +1484,9 @@ export const register: Register = (on, options) => {
     // ---------------- board
     const twoUp = inner >= 54
     const colW = twoUp ? Math.max(12, Math.floor((inner - 4) / 3) - 4) : inner - 2
+    // the running stretch of the bar and the running card's marker blink together; reducedMotion holds them lit
+    const isLit = opt('reducedMotion', 0) > 0 || frame % 2 === 0
+    const inkOf = (i: number, status: Task['status']) => (status === 'failed' ? L.FAILED_COLOR : status === 'todo' ? undefined : L.cardColor(i))
     const card = (t: Task) => {
       const tierColor = L.TIER_COLOR[t.tier]
       const bot = t.status === 'doing' ? L.workingBot(t.tier, frame, opt('reducedMotion', 0) > 0) : null
@@ -1491,6 +1494,9 @@ export const register: Register = (on, options) => {
       const iconColor = t.status === 'done' ? 'green' : t.status === 'failed' ? 'red' : 'gray'
       return (
         <Text key={`card-${t.id}`} wrap="wrap">
+          <Text color={inkOf(tasks.indexOf(t), t.status)} dimColor={t.status === 'todo' || (t.status === 'doing' && !isLit)}>
+            {t.status === 'todo' ? '░' : '█'}{' '}
+          </Text>
           {bot ? (
             <Text bold>
               <Text color={tierColor}>{bot.face}</Text>
@@ -1519,23 +1525,33 @@ export const register: Register = (on, options) => {
     const todo = tasks.filter(t => t.status === 'todo')
     const doing = tasks.filter(t => t.status === 'doing')
     const done = tasks.filter(t => t.status === 'done' || t.status === 'failed' || t.status === 'skipped')
+    const progress = L.boardProgress(tasks)
+    const progressBar = (
+      <Text wrap="truncate-end">
+        {L.boardSlices(tasks, Math.max(6, inner - 7)).map(x => (
+          <Text key={`slice-${x.card}`} color={inkOf(x.card, x.status)} dimColor={x.status === 'todo' || (x.status === 'doing' && !isLit)}>
+            {(x.status === 'todo' ? '░' : x.status === 'doing' ? (isLit ? '▓' : '░') : '█').repeat(x.cells)}
+          </Text>
+        ))}
+        <Text bold color={L.gradientAt(progress.ratio)}>
+          {pctText(progress.ratio * 100)}
+        </Text>
+      </Text>
+    )
     const boardWin = win(
       '▦',
       'BOARD',
       'yellow',
       tasks.length === 0 ? (
         <Text dimColor>Empty. /command-deck-plan &lt;what you want done&gt; fills it, /command-deck run works through it.</Text>
-      ) : twoUp ? (
-        <Box gap={1}>
-          {lane('TODO', 'yellow', todo)}
-          {lane('DOING', 'cyan', doing)}
-          {lane('DONE', 'green', done)}
-        </Box>
       ) : (
         <Box flexDirection="column">
-          {lane('TODO', 'yellow', todo)}
-          {lane('DOING', 'cyan', doing)}
-          {lane('DONE', 'green', done)}
+          {progressBar}
+          <Box gap={twoUp ? 1 : 0} flexDirection={twoUp ? 'row' : 'column'}>
+            {lane('TODO', 'yellow', todo)}
+            {lane('DOING', 'cyan', doing)}
+            {lane('DONE', 'green', done)}
+          </Box>
         </Box>
       ),
       tasks.length ? `${done.length}/${tasks.length} done` : undefined,

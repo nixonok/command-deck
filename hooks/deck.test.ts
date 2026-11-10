@@ -401,9 +401,11 @@ test('board follows the chat: TodoWrite completes a plan card and adds a new one
   const ui = await $.ui.mount({ plugin: 'command-deck', surface: 'terminal', component: 'Pane', props: {}, requestId: 'command-deck' } as any)
   const all = (await ui.findAll({ type: 'Text' })).map(x => x.text).join(' | ')
   expect(all).toContain('2/4 done')
-  expect(all).toMatch(/TODO 1 \| 1 \| ○ \[Sonnet\] Fix done tasks/)
-  expect(all).toMatch(/DOING 1 \| 1 \| \S+ \[Sonnet\] Brand new step/)
-  expect(all).toMatch(/DONE 2 \| 2 \| ✔ \[Sonnet\] Map the data flow/)
+  expect(all).toMatch(/TODO 1 \| 1 \| ░ ○ \[Sonnet\] Fix done tasks/)
+  expect(all).toMatch(/DOING 1 \| 1 \| █ \S+ \[Sonnet\] Brand new step/)
+  expect(all).toMatch(/DONE 2 \| 2 \| █ ✔ \[Sonnet\] Map the data flow/)
+  // the bar above the lanes: one stretch per card in board order (done, todo, doing, done), then the percent
+  expect(all).toMatch(/█+░+▓+█+ +63%/)
   await ui.unmount()
 })
 
@@ -509,7 +511,7 @@ test('board follows agents and replies without a plan: agent card Doing then don
   await $.agent.spawn({ description: 'Find board sync hooks', prompt: 'look', subagentType: 'Explore' } as any)
   expect(await board()).toMatch(/DOING 1 \| 1 \| .*\(.ᴗ.\)\S \[Haiku\] Find board sync hooks/)
   await $.turn.complete({ agentId: 'a1', answer: 'found' } as any)
-  expect(await board()).toMatch(/DONE 1 \| 1 \| ✔ \[Haiku\] Find board sync hooks/)
+  expect(await board()).toMatch(/DONE 1 \| 1 \| █ ✔ \[Haiku\] Find board sync hooks/)
   await $.turn.complete({ answer: 'Registered.\nDone: Register GA dimensions' } as any)
   expect(await board()).toContain('2/2 done')
 })
@@ -609,4 +611,26 @@ test('a message with images is never held back for questions, and the planner is
   expect(L.mayAsk(unclear, true, 0)).toBe(false)
   expect(L.plannerPrompt('make it look like these', [], [], [], 2)).toContain('attached 2 image(s)')
   expect(L.plannerPrompt('make it look like these', [])).not.toContain('attached')
+})
+
+test('board progress: one colored stretch per card, cells fill the bar exactly, skipped cards leave the count', () => {
+  const mk = (status: Task['status'], id: number): Task => ({ id, title: `t${id}`, tier: 'sonnet', why: '', status, tokens: 0 })
+  const board = [mk('done', 1), mk('doing', 2), mk('todo', 3), mk('skipped', 4), mk('failed', 5)]
+  expect(L.boardProgress(board)).toEqual({ done: 1, total: 4, ratio: 0.375 })
+  const slices = L.boardSlices(board, 30)
+  // the skipped card has no stretch; each stretch keeps its card's place on the board, so row and bar share a color
+  expect(slices.map(x => [x.card, x.status])).toEqual([[0, 'done'], [1, 'doing'], [2, 'todo'], [4, 'failed']])
+  for (const w of [0, 1, 3, 7, 30, 31]) expect(L.boardSlices(board, w).reduce((n, x) => n + x.cells, 0)).toBe(w)
+  expect(L.boardSlices(board, 30)).toEqual(slices)
+  // empty and all-skipped boards: no stretches, 0%, never NaN
+  expect(L.boardProgress([])).toEqual({ done: 0, total: 0, ratio: 0 })
+  expect(L.boardSlices([], 20)).toEqual([])
+  expect(L.boardProgress([mk('skipped', 1)]).ratio).toBe(0)
+  expect(L.boardSlices(board, Number.NaN).every(x => x.cells === 0)).toBe(true)
+  expect(L.boardProgress([mk('done', 1), mk('done', 2)]).ratio).toBe(1)
+  // eight card colors, then they repeat; the percent runs red to amber to green and clamps
+  expect(new Set(Array.from({ length: 8 }, (_, i) => L.cardColor(i))).size).toBe(8)
+  expect(L.cardColor(8)).toBe(L.cardColor(0))
+  expect([L.gradientAt(0), L.gradientAt(0.5), L.gradientAt(1)]).toEqual(['#ef4444', '#f59e0b', '#22c55e'])
+  expect([L.gradientAt(-1), L.gradientAt(9), L.gradientAt(Number.NaN)]).toEqual(['#ef4444', '#22c55e', '#ef4444'])
 })
