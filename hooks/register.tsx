@@ -14,17 +14,12 @@ const goalA = atom({ plugin: 'command-deck', key: 'goal' } as const, '')
 const pendingA = atom({ plugin: 'command-deck', key: 'pending' } as const, null as Pending | null)
 const usageA = atom({ plugin: 'command-deck', key: 'usage' } as const, {} as Record<string, number>)
 const savingsA = atom({ plugin: 'command-deck', key: 'savings' } as const, L.ZERO_SAVINGS)
-const caveA = atom({ plugin: 'command-deck', key: 'cave' } as const, true)
 const gitA = atom({ plugin: 'command-deck', key: 'git' } as const, null as GitInfo | null)
 // RTK runs outside the chat, so its state and today's savings come from its own CLI; null until first checked
 const rtkA = atom({ plugin: 'command-deck', key: 'rtk' } as const, null as { state: L.ToolState; saved: number } | null)
 const limitsA = atom({ plugin: 'command-deck', key: 'limits' } as const, { ctxWindow: 0, ctxPct: 0 } as Limits)
 const frameA = atom({ plugin: 'command-deck', key: 'frame' } as const, 0)
 const tipA = atom({ plugin: 'command-deck', key: 'tip' } as const, 0)
-const autoA = atom({ plugin: 'command-deck', key: 'auto' } as const, true)
-const cleanA = atom({ plugin: 'command-deck', key: 'clean' } as const, true)
-// Auto Clean is on by default: off means Handoff+/Clean only compacts; the choice is stored and survives restarts
-const autoCleanA = atom({ plugin: 'command-deck', key: 'autoClean' } as const, true)
 // a clean waiting for the person's yes or skip; the handoff is already written when this is set
 type CleanAsk = { path: string; first: string; carry?: string; shed: number }
 const learnA = atom({ plugin: 'command-deck', key: 'learn' } as const, null as Learn | null)
@@ -131,9 +126,6 @@ async function save($: any) {
     await $.store.set('deck.goal', await read($, goalA))
     await $.store.set('deck.pending', await read($, pendingA))
     await $.store.set(await savingsKey($), await read($, savingsA))
-    await $.store.set('deck.cave', await read($, caveA))
-    await $.store.set('deck.clean', await read($, cleanA))
-    await $.store.set('deck.autoClean', await read($, autoCleanA))
   } catch {
     /* the store is a convenience; the dated files are the record */
   }
@@ -170,14 +162,6 @@ async function load($: any) {
   const pending = null as Pending | null
   await $.store.set('deck.pending', null).catch(() => undefined)
   const savings = { ...L.ZERO_SAVINGS, ...((await $.store.get(await savingsKey($))) as Partial<Savings> | undefined) }
-  const caveStored = await $.store.get('deck.cave')
-  const cave = caveStored === undefined ? true : Boolean(caveStored)
-  const cleanStored = await $.store.get('deck.clean')
-  const clean = cleanStored === undefined ? true : Boolean(cleanStored)
-  const autoCleanStored = await $.store.get('deck.autoClean')
-  const autoClean = autoCleanStored === undefined ? true : Boolean(autoCleanStored)
-  const autoStored = await $.store.get('deck.auto')
-  const auto = autoStored === undefined ? true : Boolean(autoStored)
   const usage = ((await $.store.get(await todayKey($))) as Record<string, number> | undefined) ?? {}
   const order = ((await $.store.get('deck.order')) as string[] | null | undefined) ?? null
   await update($, orderA, () => order)
@@ -188,10 +172,6 @@ async function load($: any) {
   await update($, goalA, () => goal)
   await update($, pendingA, () => pending)
   await update($, savingsA, () => savings)
-  await update($, caveA, () => cave)
-  await update($, autoA, () => auto)
-  await update($, cleanA, () => clean)
-  await update($, autoCleanA, () => autoClean)
   await update($, usageA, () => usage)
 }
 
@@ -609,25 +589,6 @@ async function warmTick($: any) {
   }
 }
 
-// Caveman is the installed caveman:caveman skill: it switches on when the person says "caveman mode" and off on
-// "stop caveman". The toggle says those words for the person (a hidden user row, no extra turn), and while on the
-// system prompt keeps a reminder so the mode survives compaction and long chats.
-async function setCave($: any, value?: boolean): Promise<boolean> {
-  const now = value ?? !(await read($, caveA))
-  await update($, caveA, () => now)
-  await save($)
-  const text = now
-    ? 'caveman mode (turned on from the Command Deck toggle: use the caveman:caveman skill for every reply until I turn it off)'
-    : 'stop caveman. talk normal. (turned off from the Command Deck toggle)'
-  try {
-    await $.session.append({ message: { type: 'user', content: [{ type: 'text', text }] } })
-  } catch {
-    /* the system prompt reminder still carries the mode */
-  }
-  $.ui.toast(now ? 'Caveman ON (caveman:caveman skill)' : 'Caveman off')
-  return now
-}
-
 // A new chat that already knows where things stand: write the handoff, clear the conversation, and send the
 // first prompt of the fresh chat for the person.
 async function fresh($: any, carry?: string): Promise<string> {
@@ -640,8 +601,7 @@ async function fresh($: any, carry?: string): Promise<string> {
   // the handoff holds the findings of this chat; list it in the history so it can be found later
   await addHistory($, `Handoff saved: ${path}`, shed)
   const ask: CleanAsk = { path, first, carry, shed }
-  // Auto Clean off: never clear, only compact. On: clear straight away, no question.
-  return L.cleanStep(await read($, autoCleanA)) === 'compact' ? runCompact($, ask) : runClean($, ask)
+  return runClean($, ask)
 }
 
 async function addHistory($: any, title: string, tokens: number) {
@@ -654,16 +614,6 @@ async function addHistory($: any, title: string, tokens: number) {
     await appendHistoryFile($, [entry])
   } catch {
     /* history is a convenience */
-  }
-}
-
-async function runCompact($: any, ask: CleanAsk): Promise<string> {
-  try {
-    await $.session.compact({ instructions: `Keep: the goal, the open tasks and any decision already made. Handoff: ${ask.path}` })
-    if (ask.carry) await $.prompt.submit({ text: ask.carry })
-    return `Handoff written to ${ask.path}. Chat compacted.`
-  } catch (err) {
-    return `Handoff written to ${ask.path}, but compact failed (${String((err as Error)?.message ?? err)}).`
   }
 }
 
@@ -722,30 +672,6 @@ function remember(role: string, text: string | undefined, max = opt('plannerChat
 }
 const HUMAN = new Set(['composer', 'bridge', 'sdk'])
 
-async function setAuto($: any, value?: boolean): Promise<boolean> {
-  const now = value ?? !(await read($, autoA))
-  await update($, autoA, () => now)
-  await save($)
-  $.ui.toast(now ? 'Auto-plan ON: every message is checked and planned' : 'Auto-plan off: messages go straight through')
-  return now
-}
-
-async function setClean($: any, value?: boolean): Promise<boolean> {
-  const now = value ?? !(await read($, cleanA))
-  await update($, cleanA, () => now)
-  await save($)
-  $.ui.toast(now ? 'Clean code ON: engineering rules go into every chat and plan' : 'Clean code off: no engineering rules added')
-  return now
-}
-
-async function setAutoClean($: any, value?: boolean): Promise<boolean> {
-  const now = value ?? !(await read($, autoCleanA))
-  await update($, autoCleanA, () => now)
-  await save($)
-  $.ui.toast(now ? 'Auto Clean ON: Handoff+/Clean clears the chat' : 'Auto Clean off: Handoff+/Clean only compacts')
-  return now
-}
-
 async function sendAnswers($: any) {
   const pending = await read($, pendingA)
   if (!pending) return
@@ -774,11 +700,10 @@ async function skipQuestions($: any) {
   await $.prompt.submit({ text: 'go' })
 }
 
-// Every typed message passes here while auto-plan is on. A cheap Haiku pass decides: ask first (the message is
+// Every typed message passes here. A cheap Haiku pass decides: ask first (the message is
 // held back and the questions shown), plan (a short plan rides along as context the person never sees), or
 // nothing worth adding (the message goes through untouched). Short messages and slash commands skip it.
 async function autoPlan($: any, e: any): Promise<string | 'drop' | null> {
-  if (!(await read($, autoA))) return null
   const isPanel = fromPanel
   fromPanel = false
   if (!isPanel && !HUMAN.has(String(e.origin?.kind))) return null
@@ -828,9 +753,8 @@ async function autoPlan($: any, e: any): Promise<string | 'drop' | null> {
   startSpin($)
   await save($)
   await writeProgress($)
-  const clean = await read($, cleanA)
   const extra = pending ? `\nOriginal request: ${pending.ask}\nThe message above answers the questions that were asked.` : ''
-  if (clean) try {
+  try {
     const logPath = `${DIR}/rules-log.md`
     const prev = (await $.fs.exists(logPath)) ? String(await $.fs.read(logPath)) : ''
     const picks = G.pickForPlan(plan).map(p => `step ${p.step} [${p.tier}]: ${p.sections.length ? `core+${p.sections.join(',')}` : 'core'}`)
@@ -841,7 +765,7 @@ async function autoPlan($: any, e: any): Promise<string | 'drop' | null> {
   }
   // Unity projects only; other projects get the same text as before
   const unity = await $.fs.exists('ProjectSettings/ProjectVersion.txt').catch(() => false)
-  return L.planContext(plan, { clean, unity }) + extra
+  return L.planContext(plan, { unity }) + extra
 }
 
 // Learn more: a pane of its own with an explanation written for the tip. The text lives in session state only:
@@ -872,16 +796,11 @@ export const register: Register = (on, options) => {
   cfg = (options ?? {}) as Record<string, unknown>;
 
   on('session.start', async ($, e, next) => {
-    await $.command.register({ name: 'command-deck', description: 'Command Deck: board, usage, git. Subcommands: auto, cave, clean, autoclean, run, fresh, handoff, compact, done N, clear', argumentHint: '[auto|cave|clean|autoclean|run|fresh|handoff|compact|done N|clear]' })
-    await $.command.register({ name: 'command-deck-cave', description: 'Caveman mode: short answers. on, off, or toggle', argumentHint: '[on|off]' })
+    await $.command.register({ name: 'command-deck', description: 'Command Deck: board, usage, git. Subcommands: run, fresh, handoff, compact, done N, clear', argumentHint: '[run|fresh|handoff|compact|done N|clear]' })
     await $.command.register({ name: 'command-deck-plan', description: 'Sharpen a request, ask what is unclear, split it into tasks per model', argumentHint: '<what you want done>' })
     await load($)
-    // autoStart (setting, default on): every new chat opens the deck pane and switches auto-plan on
-    if (opt('autoStart', 1) > 0) {
-      await update($, autoA, () => true)
-      await $.store.set('deck.auto', true)
-      void $.ui.open({ id: PANE, title: 'Command Deck' })
-    }
+    // autoStart (setting, default on): every new chat opens the deck pane
+    if (opt('autoStart', 1) > 0) void $.ui.open({ id: PANE, title: 'Command Deck' })
     void refreshGit($)
     void refreshUsage($)
     void refreshRtk($, true)
@@ -894,12 +813,6 @@ export const register: Register = (on, options) => {
   })
 
   // ------------------------------------------------------------ commands
-  on('command.run', { command: 'command-deck-cave' }, async ($, e) => {
-    const arg = e.args.trim().toLowerCase()
-    const now = await setCave($, arg === 'on' ? true : arg === 'off' ? false : undefined)
-    return { text: now ? 'Caveman ON. Short answers.' : 'Caveman off.' }
-  })
-
   on('command.run', { command: 'command-deck-plan' }, async ($, e) => {
     const text = e.args.trim()
     if (!text) {
@@ -939,26 +852,6 @@ export const register: Register = (on, options) => {
       case 'new':
         void $.clock.after(50, () => void fresh($).then(t => $.ui.toast(t)))
         return { text: 'Writing the handoff, then starting a fresh chat with it.' }
-      case 'auto': {
-        const arg = (rest[0] ?? '').toLowerCase()
-        const now = await setAuto($, arg === 'on' ? true : arg === 'off' ? false : undefined)
-        return { text: now ? 'Auto-plan ON.' : 'Auto-plan off.' }
-      }
-      case 'clean': {
-        const arg = (rest[0] ?? '').toLowerCase()
-        const now = await setClean($, arg === 'on' ? true : arg === 'off' ? false : undefined)
-        return { text: now ? 'Clean code ON. Engineering rules added to chats and plans.' : 'Clean code off.' }
-      }
-      case 'autoclean': {
-        const arg = (rest[0] ?? '').toLowerCase()
-        const now = await setAutoClean($, arg === 'on' ? true : arg === 'off' ? false : undefined)
-        return { text: now ? 'Auto Clean ON. Handoff+/Clean clears the chat.' : 'Auto Clean off. Handoff+/Clean only compacts.' }
-      }
-      case 'cave': {
-        const arg = (rest[0] ?? '').toLowerCase()
-        const now = await setCave($, arg === 'on' ? true : arg === 'off' ? false : undefined)
-        return { text: now ? 'Caveman ON. Short answers.' : 'Caveman off.' }
-      }
       case 'warm': {
         const arg = (rest[0] ?? '').toLowerCase()
         if (arg === 'off') {
@@ -1001,7 +894,7 @@ export const register: Register = (on, options) => {
         await save($)
         return { text: 'Board cleared.' }
       default:
-        return { text: 'Subcommands: auto [on|off], cave [on|off], clean [on|off], autoclean [on|off], warm [on|off], tools [on|off], run, fresh (handoff + new chat), handoff, compact, done N, clear. Also /command-deck-plan <ask>.' }
+        return { text: 'Subcommands: warm [on|off], tools [on|off], run, fresh (handoff + new chat), handoff, compact, done N, clear. Also /command-deck-plan <ask>.' }
     }
   })
 
@@ -1009,9 +902,7 @@ export const register: Register = (on, options) => {
   on('prompt.compose', async ($, e, next) => {
     const out = await next(e)
     const extra: { id: string; text: string; scope: 'session' }[] = []
-    if (await read($, autoA)) extra.push({ id: 'command-deck:house', text: L.HOUSE_SECTION, scope: 'session' })
-    if (await read($, cleanA)) extra.push({ id: 'command-deck:clean-code', text: G.CORE, scope: 'session' })
-    if (await read($, caveA)) extra.push({ id: 'command-deck:caveman', text: L.CAVEMAN_SECTION, scope: 'session' })
+    extra.push({ id: 'command-deck:house', text: L.HOUSE_SECTION, scope: 'session' }, { id: 'command-deck:clean-code', text: G.CORE, scope: 'session' }, { id: 'command-deck:caveman', text: L.CAVEMAN_SECTION, scope: 'session' })
     return extra.length ? { ...out, sections: [...out.sections, ...extra] } : out
   })
 
@@ -1089,10 +980,9 @@ export const register: Register = (on, options) => {
   })
 
   on('agent.spawn', async ($, e, next) => {
-    const auto = await read($, autoA)
     const nextTodo = isAutoBoard ? (await read($, tasksA)).find(t => t.status === 'todo') : undefined
     const wantsHaiku = !e.model && (String(e.subagentType) === 'Explore' || (nextTodo?.tier === 'haiku' && String(e.subagentType) !== 'Plan'))
-    const input = auto && wantsHaiku ? { ...e, model: 'haiku' } : e
+    const input = wantsHaiku ? { ...e, model: 'haiku' } : e
     const res = (await next(input)) as { model?: string; agentId?: string; deny?: unknown }
     if (!isRunning && !res?.deny && res?.agentId) {
       const ask = e as { description?: unknown; prompt?: unknown }
@@ -1237,7 +1127,7 @@ export const register: Register = (on, options) => {
     if (!e.agentId && usage && L.toolAvailable('ponytail', undefined, undefined, 0, (await read($, limitsA)).skills)) {
       await addSaving('ponytail', L.cavemanSaved(usage.output_tokens ?? 0, opt('ponytailRatio', 0.45)), $)
     }
-    if (!e.agentId && usage && (await read($, caveA))) {
+    if (!e.agentId && usage) {
       await addSaving('caveman', L.cavemanSaved(usage.output_tokens ?? 0, opt('cavemanRatio', 0.35)), $)
     }
     await save($)
@@ -1275,19 +1165,15 @@ export const register: Register = (on, options) => {
   // ------------------------------------------------------------ the pane
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Text, Button } = $.ui.resolve(e)
-    const [tasks, usage, savings, cave, clean, autoClean, git, limits, frame, tip, goal, auto, pending, draft, mins, savedOrder, hist, answered, rtk] = await Promise.all([
+    const [tasks, usage, savings, git, limits, frame, tip, goal, pending, draft, mins, savedOrder, hist, answered, rtk] = await Promise.all([
       read($, tasksA),
       read($, usageA),
       read($, savingsA),
-      read($, caveA),
-      read($, cleanA),
-      read($, autoCleanA),
       read($, gitA),
       read($, limitsA),
       read($, frameA),
       read($, tipA),
       read($, goalA),
-      read($, autoA),
       read($, pendingA),
       read($, draftA),
       read($, minA),
@@ -1394,11 +1280,7 @@ export const register: Register = (on, options) => {
           ◆ COMMAND DECK
         </Text>
         <Box gap={1} flexWrap="wrap">
-          <Button key="cave" label={cave ? '🔥 Caveman ON' : '○ Caveman off'} onPress={() => setCave($)} />
-          <Button key="clean" label={clean ? '✓ Clean code ON' : '○ Clean code off'} onPress={() => setClean($)} />
-          <Button key="auto" label={auto ? '⚡ Auto-plan ON' : '○ Auto-plan off'} onPress={() => setAuto($)} />
           <Button key="fresh" label="⇢ Handoff+/Clean" onPress={() => void fresh($).then(t => $.ui.toast(t))} />
-          <Button key="autoclean" label={autoClean ? '✓ Auto Clean ON' : '○ Auto Clean off'} onPress={() => setAutoClean($)} />
           <Button key="reset-layout" label="↺ Reset layout" onPress={resetLayout} />
         </Box>
       </Box>
@@ -1700,7 +1582,7 @@ export const register: Register = (on, options) => {
       'yellow',
       [
         saveRow('Graft', savings.graft, inPrice, 'green', graftState, 'graft'),
-        saveRow('Caveman', savings.caveman, outPrice, 'yellow', L.toolState('caveman', limits.servers, limits.skillTokens, savings.caveman, limits.skills, cave)),
+        saveRow('Caveman', savings.caveman, outPrice, 'yellow', L.toolState('caveman', limits.servers, limits.skillTokens, savings.caveman, limits.skills)),
         saveRow('Optimizer', savings.optimizer, inPrice, 'green', L.toolState('optimizer', limits.servers, limits.skillTokens, savings.optimizer, limits.skills)),
         saveRow('RTK', rtkSaved, inPrice, 'cyan', rtk?.state),
         saveRow('Ponytail', savings.ponytail, outPrice, 'cyan', L.toolState('ponytail', undefined, undefined, savings.ponytail, limits.skills)),

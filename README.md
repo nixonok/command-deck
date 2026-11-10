@@ -21,8 +21,8 @@ Command Deck puts it in one pane you can read at a glance:
 
 - context fill, daily token use and estimated savings
 - a plan with each step tagged Haiku, Sonnet or Opus
-- toggles for caveman replies, clean code and auto-plan
-- a Handoff+/Clean button, with Auto Clean to choose between clearing and only compacting
+- caveman replies, clean code rules and auto-plan, always on
+- a Handoff+/Clean button: writes a handoff, then clears the chat
 - a warning before the cache goes cold, and a keep-warm ping
 
 It is my one-shot attempt to put most of what I know about saving tokens and cost into one tool, so nobody has to remember the routine. Feedback and fixes are welcome.
@@ -33,7 +33,7 @@ It is my one-shot attempt to put most of what I know about saving tokens and cos
 - **Kanban board.** Tasks, status, tokens per task, a history of the last 200 finished tasks that survives `/clear`.
 - **Usage and git panel.** Context bar, daily usage, branch, ahead/behind, changed files.
 - **Clean code toggle.** Engineering rules added to every chat. Step-specific rules (bug, feature, refactor, design, perf, security, risky, test) are picked per task and model by plain keywords, with one final review pass at the end. No extra model call.
-- **Caveman toggle.** Short, blunt replies to save output tokens.
+- **Caveman mode.** Short, blunt replies to save output tokens, on in every chat.
 - **Handoff memory.** Writes a handoff note and starts a fresh chat at a context % you choose, or on a new topic.
 - **Cache guard and keep-warm.** Warns before an expensive cold-cache rewrite and can ping to keep the cache warm.
 - **Smart tool deferral.** Moves MCP servers the work does not need behind tool search.
@@ -41,9 +41,9 @@ It is my one-shot attempt to put most of what I know about saving tokens and cos
 
 ### The pane
 
-The header holds the switches. Press one before a prompt; the choice is remembered.
+The header holds Handoff+/Clean and Reset layout. Caveman, clean code and auto-plan are always on.
 
-<p align="center"><img src="assets/header.png" alt="Command Deck header buttons: Caveman, Clean code, Auto-plan, Handoff+/Clean, Auto Clean, Reset layout" width="420"></p>
+<p align="center"><img src="assets/header.png" alt="Command Deck header" width="420"></p>
 
 The board follows the plan, every subagent and the chat's own task list. Each subagent gets a card (the step its description names, or a new one) that is DOING while it runs and DONE when it returns. The main chat closes a card with `TodoWrite` or `TaskUpdate`, or, where it has no task tools, with a `Done: <title>` line in its reply (`Todo: <title>` adds one, `Skip: <title>` closes one dropped on purpose as skipped, shown grey in DONE). A plan that changes no code (release notes, research) gets no smoke test card. DOING means work is live: a card the main chat only touched goes back to TODO when its turn ends. When an answer leaves cards in TODO without those lines, a small Haiku call reads the answer and closes the ones it says are done or dropped; cards it is unsure of stay open.
 
@@ -99,10 +99,6 @@ After any install, run `/reload-plugins` (or start a new chat). The pane opens b
 |---|---|
 | `/command-deck` | Open the board |
 | `/command-deck-plan <what you want>` | Sharpen a request, ask what is unclear, split it into tasks per model |
-| `/command-deck-cave [on\|off]` | Caveman mode |
-| `/command-deck clean [on\|off]` | Clean code rules |
-| `/command-deck auto [on\|off]` | Auto-plan every message |
-| `/command-deck autoclean [on\|off]` | Handoff+/Clean clears the chat (default, no question); off only compacts |
 | `/command-deck run` | Run the open tasks, each on its own model |
 | `/command-deck fresh` | Handoff, then a new chat |
 | `/command-deck handoff` · `compact` | Write a handoff note · compact the chat |
@@ -110,7 +106,7 @@ After any install, run `/reload-plugins` (or start a new chat). The pane opens b
 | `/command-deck warm [on\|off] [hours]` | Keep the prompt cache warm |
 | `/command-deck tools [on\|off]` | Smart MCP tool deferral |
 
-The pane header has buttons for Caveman, Clean code, Auto-plan, Handoff+/Clean, Auto Clean and Reset layout. The first three and Auto Clean switch a feature on or off, so press them before a prompt; the choice is remembered. Handoff+/Clean writes a handoff, then clears the chat. With Auto Clean off, it only compacts.
+Caveman mode, clean code rules and auto-plan are always on; there is no switch for them. The pane header has Handoff+/Clean (writes a handoff, then clears the chat) and Reset layout.
 
 ## How clean code picks rules
 
@@ -119,7 +115,6 @@ The pane header has buttons for Caveman, Clean code, Auto-plan, Handoff+/Clean, 
 3. A plan with more than one step ends with one final review of the whole diff. It never runs per step.
 4. Each plan appends its picks to `.claude/deck/rules-log.md` so you can see what was chosen.
 
-Turn it off with the button or `/command-deck clean off`.
 
 ## Settings and thresholds
 
@@ -140,7 +135,7 @@ Change a value in any of these ways:
 | `plannerChatMessages` | 8 | Latest chat messages the planner reads. 0 sends none. |
 | `plannerChatChars` | 500 | Characters kept per message sent to the planner. |
 | `judgeBoard` | 1 | After each answer, Haiku closes the TODO cards the answer settles. 0 is off. |
-| `autoStart` | 1 | Open the pane and enable auto-plan in every new chat. |
+| `autoStart` | 1 | Open the pane in every new chat. |
 | `reducedMotion` | 0 | 1 holds the Doing-card bots still (terminals have no reduced-motion setting). |
 | `coldGuard` | 1 | 0 off, 1 warn, 2 also hold the first send. |
 | `cacheTtlMin` | 60 | Prompt cache lifetime. Use 5 for API-key billing. |
@@ -178,7 +173,7 @@ Only under `.claude/deck/` in your project: `rules.md` (your rules for new chats
 
 ## Optional tools
 
-Every savings row shows its tool's state. Graft and token-optimizer count as installed when their MCP servers are connected (the Graft skill without its server reads Not Active). Caveman, Ponytail and Graphify count as installed when the chat lists their skills (or the Graphify MCP server); Caveman reads Not Active while its toggle is off. Their figures are estimates. RTK's row comes from `rtk gain` (today's saved tokens) and `rtk verify` (Not Active when its Claude Code hook is not registered).
+Every savings row shows its tool's state. Graft and token-optimizer count as installed when their MCP servers are connected (the Graft skill without its server reads Not Active). Caveman, Ponytail and Graphify count as installed when the chat lists their skills (or the Graphify MCP server); Their figures are estimates. RTK's row comes from `rtk gain` (today's saved tokens) and `rtk verify` (Not Active when its Claude Code hook is not registered).
 
 The board follows the chat's own task list: new tasks from `TodoWrite` or `TaskCreate` (or `Todo:` lines in a reply) become cards, and a card moves to Doing or Done when its task is started or completed (or a `Done:` line names it; a `Skip:` line closes it as skipped). Every subagent shows as its own card.
 
@@ -191,8 +186,8 @@ Command Deck is a mod, so it uses powers a plain skill does not. Each one, and w
 - **Reads the conversation, sends nothing out.** It reads chat and usage data to fill the board and savings. It sends no data to any server of its own; the only model calls are the ones Claude Code makes (including the Haiku agents below).
 - **Starts agents.** The planner and the board judge run as Haiku agents. They get the user's request, up to `plannerChatMessages` recent messages (each cut to `plannerChatChars` characters) and the task titles.
 - **Submits prompts.** The plan, a handoff and a new-topic message are submitted into the chat as the user's own prompt, so the user sees them. Nothing is hidden.
-- **Runs `/clear`.** Handoff+/Clean and the new-topic move write a handoff file first and then clear the chat. Auto Clean and the new-topic move can be turned off in the plugin options (`autoFresh`, `autoFreshPct`).
-- **Changes agent model.** The `agent.spawn` hook sets `model: haiku` on Explore agents and on agents for a Haiku-tier board card, when the deck's auto switch is on. It does not change permission modes, and it passes every other event on unchanged.
+- **Runs `/clear`.** Handoff+/Clean and the new-topic move write a handoff file first and then clear the chat. The new-topic move can be turned off in the plugin options (`autoFresh`); the threshold is `autoFreshPct`.
+- **Changes agent model.** The `agent.spawn` hook sets `model: haiku` on Explore agents and on agents for a Haiku-tier board card. It does not change permission modes, and it passes every other event on unchanged.
 - **Credentials.** It reads no keys or tokens. The only local reads are the project's `.claude/deck/` files and the tool output above.
 - **Install help.** The Install buttons in the savings pane only submit a prompt that names each tool, its source link and its steps. They run nothing themselves.
 

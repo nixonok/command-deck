@@ -79,14 +79,10 @@ declare module 'claude-code' {
       pending: Pending | null
       usage: Record<string, number>
       savings: Savings
-      cave: boolean
-      clean: boolean
-      autoClean: boolean
       git: GitInfo | null
       limits: Limits
       frame: number
       tip: number
-      auto: boolean
       learn: Learn | null
       draft: Record<string, Draft>
       answered: boolean

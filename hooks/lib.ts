@@ -338,20 +338,18 @@ export function installPrompt(tools: ToolName[]): string {
 }
 
 export type ToolState = 'active' | 'inactive' | 'missing'
-/** Installed and running, installed but off, or not installed. `isOn` is the tool's own switch (Caveman's toggle). */
+/** Installed and running, installed but not running, or not installed. */
 export function toolState(
   tool: ToolName,
   servers: { server: string }[] | undefined,
   skillTokens: number | undefined,
   saved: number,
   skills?: string[],
-  isOn = true,
 ): ToolState {
   const listed = Boolean(skills?.includes(tool))
   // with the skill list known, Caveman is installed only when it is listed
   if (tool === 'caveman' && skills?.length && !listed && saved === 0) return 'missing'
   if (!listed && !toolAvailable(tool, servers, skillTokens, saved, skills)) return 'missing'
-  if (!isOn) return 'inactive'
   // the Graft skill is listed but its MCP server is not connected
   if (tool === 'graft' && saved === 0 && servers && !servers.some(sv => norm(sv.server) === 'graft')) return 'inactive'
   return 'active'
@@ -414,9 +412,8 @@ export function isWorthAttaching(plan: Plan): boolean {
   return plan.tasks.length > 1 || plan.tasks.some(t => t.tier !== 'sonnet')
 }
 
-/** clean (default on) adds the step-specific engineering rules and the final pass; the always-on core rides in the system prompt. */
-export function planContext(plan: Plan, opts: { clean?: boolean; unity?: boolean } = {}): string {
-  const clean = opts.clean !== false
+/** The plan the model reads with the message: steps, how to run them, the step-specific engineering rules and the final pass. */
+export function planContext(plan: Plan, opts: { unity?: boolean } = {}): string {
   const steps = plan.tasks.map(
     (t, i) => `${i + 1}. [${TIER_LABEL[t.tier]}${t.parallel ? ' ∥' : ''}] ${t.title}`,
   )
@@ -427,8 +424,8 @@ export function planContext(plan: Plan, opts: { clean?: boolean; unity?: boolean
     ...steps,
     'How to run it: Sonnet and Opus steps you do yourself. Every [Haiku] step MUST go to its own subagent with model "haiku", never done in this chat: give it only the step title, the exact file or spot to change and the done condition, no project history. Start all ∥ Haiku steps in one message so they run at once, but only if they edit different files; steps on the same file go one after another. Read-heavy searching goes to an Explore subagent. Long builds and test runs go in the background. After each subagent returns, check its edit by reading the changed spot or running the existing checks. Report which steps ran on Haiku, which ran in parallel, and any failure. Keep the board in sync: give each subagent a step title word for word as its description; for steps you do yourself, call TodoWrite (or TaskCreate/TaskUpdate) with these step titles word for word, and if you have none of those tools, end the reply with a line `Done: <step title>` for each step verified done and `Skip: <step title>` for each step dropped on purpose.',
     ...(opts.unity ? [UNITY_RULES] : []),
-    ...(clean ? [guidelineExtras(plan)].filter(Boolean) : []),
-    ...(clean && plan.tasks.length > 1 ? [finalPass(plan)] : []),
+    ...[guidelineExtras(plan)].filter(Boolean),
+    ...(plan.tasks.length > 1 ? [finalPass(plan)] : []),
   ].join('\n')
 }
 
@@ -436,7 +433,7 @@ export const HOUSE_SECTION = `Command Deck is active. Keep the main context smal
 
 // ---------------------------------------------------------------- caveman
 
-export const CAVEMAN_SECTION = `Caveman mode is ON: the person switched it on with the Command Deck toggle. Before your first reply, load the caveman:caveman skill with the Skill tool if it is not loaded yet, then follow it for every reply until the person turns it off. Short, blunt sentences in every reply, including the first. If that skill is not installed: short sentences, small words, no filler, code and names unchanged.`
+export const CAVEMAN_SECTION = `Caveman mode is ON: Command Deck keeps it on in every chat. Before your first reply, load the caveman:caveman skill with the Skill tool if it is not loaded yet, then follow it for every reply. Short, blunt sentences in every reply, including the first. If that skill is not installed: short sentences, small words, no filler, code and names unchanged.`
 
 // ---------------------------------------------------------------- files
 
@@ -685,11 +682,6 @@ export function parseNeed(raw: string): string[] | null {
 }
 
 export const serverOfTool = (tool: string): string | null => /^mcp__(.+?)__/.exec(tool)?.[1] ?? null
-
-// what Handoff+/Clean does after the handoff is written: with Auto Clean on (the default) it clears the chat,
-// otherwise it only compacts
-export type CleanStep = 'clean' | 'compact'
-export const cleanStep = (autoClean: boolean): CleanStep => (autoClean ? 'clean' : 'compact')
 
 export const SMOKE_TITLE = 'Smoke test run: confirm the whole change works'
 // a plan that changes code ends with a smoke test run, so the board is not done until the work is checked; a plan

@@ -126,23 +126,27 @@ test('planner rules: questions are answered in chat, and "fix it" means what the
   expect(q && L.isWorthAttaching(q)).toBe(false)
 })
 
-test('/command-deck-cave switches caveman on and the system prompt gains its section', async ($, on) => {
-  // nothing stands beneath the plugins here, so the test answers the engine's part: no sections
+test('caveman, clean code, auto-plan and Auto Clean are always on: no switch, and a stale off value is ignored', async ($, on) => {
+  mock.clock(on, { now: 1_791_868_793_562 })
+  mock.store(on, { 'deck.cave': false, 'deck.clean': false, 'deck.auto': false, 'deck.autoClean': false })
+  on('session.start', () => ({ cwd: '/tmp/x' }) as any)
+  on('command.register', () => ({ value: undefined }) as any)
+  on('ui.open', () => ({ value: undefined }) as any)
+  on('process.run', () => ({ value: { stdout: '', stderr: '', code: 1 } }) as any)
+  on('session.usage', () => ({ value: undefined }) as any)
   on('prompt.compose', () => ({ sections: [] }))
-  const out = await $.command.run({ command: 'command-deck-cave', args: 'on' } as Parameters<typeof $.command.run>[0])
-  expect(out.text).toContain('Caveman ON')
+  await $.session.start({ cwd: '/tmp/x', surface: null, isInteractive: false } as any)
   const composed = await $.prompt.compose({ model: 'claude-sonnet-5-5', promptModel: 'claude-sonnet-5-5', surfaces: ['terminal'], tools: [], outputStyle: null, traits: [] })
-  expect(composed.sections.some(s => s.id === 'command-deck:caveman')).toBe(true)
-})
-
-test('/command-deck clean turns the engineering rules section on and off', async ($, on) => {
-  on('prompt.compose', () => ({ sections: [] }))
-  const ask = () => $.prompt.compose({ model: 'claude-sonnet-5-5', promptModel: 'claude-sonnet-5-5', surfaces: ['terminal'], tools: [], outputStyle: null, traits: [] })
-  const run = (args: string) => $.command.run({ command: 'command-deck', args } as Parameters<typeof $.command.run>[0])
-  expect((await run('clean on')).text).toContain('Clean code ON')
-  expect((await ask()).sections.some(s => s.id === 'command-deck:clean-code')).toBe(true)
-  expect((await run('clean off')).text).toContain('Clean code off')
-  expect((await ask()).sections.some(s => s.id === 'command-deck:clean-code')).toBe(false)
+  const ids = composed.sections.map(x => x.id)
+  for (const id of ['command-deck:house', 'command-deck:clean-code', 'command-deck:caveman']) expect(ids.includes(id)).toBe(true)
+  // the switch subcommands are gone: they fall back to the list of what is left
+  const old = await $.command.run({ command: 'command-deck', args: 'clean off' } as Parameters<typeof $.command.run>[0])
+  expect(old.text).not.toContain('off.')
+  expect(old.text).not.toContain('auto [on|off]')
+  const ui = await $.ui.mount({ plugin: 'command-deck', surface: 'terminal', component: 'Pane', props: {}, requestId: 'command-deck' } as any)
+  const all = (await ui.findAll({ type: 'Text' })).map(x => x.text).join(' | ')
+  await ui.unmount()
+  expect(all).not.toMatch(/Caveman ON|Clean code|Auto-plan|Auto Clean/)
 })
 
 test('waves: consecutive parallel tasks go together, others alone', () => {
@@ -258,8 +262,6 @@ test('guidelines: core stays small and sections are picked per step and tier', (
   expect(G.finalPass(arch)).toContain('Final pass')
   expect(L.planContext(arch).match(/Final pass/g)?.length).toBe(1)
   expect(L.planContext(rename)).not.toContain('Final pass')
-  expect(L.planContext(arch, { clean: false })).not.toContain('Final pass')
-  expect(L.planContext(arch, { clean: false })).not.toContain('Extra engineering rules')
   console.log(JSON.stringify(picks), G.guidelineExtras(arch).split(/\s+/).length, 'words')
 })
 
@@ -279,11 +281,6 @@ test('each tier has its own working bot that blinks, sparkles in changing colors
   // reduced motion holds the first frame at any frame number
   expect(new Set(Array.from({ length: 8 }, (_, f) => JSON.stringify(L.workingBot('haiku', f, true)))).size).toBe(1)
   expect(L.workingBot('haiku', 5, true)).toEqual(L.workingBot('haiku', 0))
-})
-
-test('Handoff+/Clean clears the chat when Auto Clean is on, otherwise only compacts', () => {
-  expect(L.cleanStep(true)).toBe('clean')
-  expect(L.cleanStep(false)).toBe('compact')
 })
 
 test('token saved: a tool shows as unavailable only when it is not connected and saved nothing', () => {
@@ -578,14 +575,13 @@ test('token saved: each tool reads active, not active or not installed', () => {
   const skills = ['graft', 'caveman', 'ponytail']
   // installed and running
   expect(L.toolState('graft', [{ server: 'graft' }], 5, 0, skills)).toBe('active')
-  expect(L.toolState('caveman', [], 5, 0, skills, true)).toBe('active')
+  expect(L.toolState('caveman', [], 5, 0, skills)).toBe('active')
   expect(L.toolState('ponytail', undefined, undefined, 0, skills)).toBe('active')
-  // installed, but off: the Graft skill without its server, Caveman with its toggle off
+  // installed, but not running: the Graft skill without its server
   expect(L.toolState('graft', [{ server: 'other' }], 5, 0, skills)).toBe('inactive')
-  expect(L.toolState('caveman', [], 5, 900, skills, false)).toBe('inactive')
   // not installed
   expect(L.toolState('graft', [{ server: 'other' }], 5, 0, ['caveman'])).toBe('missing')
-  expect(L.toolState('caveman', [], 5, 0, ['graft'], true)).toBe('missing')
+  expect(L.toolState('caveman', [], 5, 0, ['graft'])).toBe('missing')
   expect(L.toolState('graphify', [], undefined, 0, [])).toBe('missing')
   expect(L.toolState('optimizer', [{ server: 'other' }], 5, 0, skills)).toBe('missing')
   // no data yet reads as active, and a tool that saved today is live
