@@ -768,7 +768,7 @@ async function autoPlan($: any, e: any): Promise<string | 'drop' | null> {
   } catch {
     /* logging is best effort */
   }
-  // Unity projects only; other projects get the same text as before
+  // Unity projects only, and only when a step writes C# (planContext checks that)
   const unity = await $.fs.exists('ProjectSettings/ProjectVersion.txt').catch(() => false)
   return L.planContext(plan, { unity }) + extra
 }
