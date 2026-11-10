@@ -439,7 +439,21 @@ test('board follows the chat: TodoWrite completes a plan card and adds a new one
   expect(all).toMatch(/DONE 2 \| 2 \| █ ✔ \[Sonnet\] Map the data flow/)
   // the bar above the lanes: one stretch per card in board order (done, todo, doing, done), then the percent
   // the running stretch shows one lit cell of its shimmer; the rest of the bar is done or waiting
-  expect(all).toMatch(/█+░+▓░*█+ +63%/)
+  // the percent is the row's last box and never shrinks; the bar's box clips, so a narrow pane cuts the bar, not the percent
+  const boxes: any[] = []
+  const walk = (n: any) => {
+    if (!n || typeof n !== 'object') return
+    if (n.type === 'Box') boxes.push(n)
+    for (const c of n.children ?? []) walk(c)
+  }
+  const textOf = (n: any): string => (typeof n === 'string' ? n : (n?.children ?? []).map(textOf).join(''))
+  walk(await ui.drawn())
+  const pctBox = boxes.find(b => b.props?.flexShrink === 0 && /^\s*63%$/.test(textOf(b)))
+  expect(pctBox).toBeDefined()
+  const row = boxes.find(b => (b.children ?? []).includes(pctBox))
+  expect(row.children.at(-1)).toBe(pctBox)
+  expect(row.children[0].props?.overflow).toBe('hidden')
+  expect(textOf(row.children[0])).toMatch(/^█+░+▓░*█+$/)
   await ui.unmount()
 })
 

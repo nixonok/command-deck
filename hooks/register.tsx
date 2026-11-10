@@ -1417,26 +1417,33 @@ export const register: Register = (on, options) => {
     const doing = tasks.filter(t => t.status === 'doing')
     const done = tasks.filter(t => t.status === 'done' || t.status === 'failed' || t.status === 'skipped')
     const progress = L.boardProgress(tasks)
+    // the percent sits right of the bar and never shrinks: a pane narrower than its reported width clips the bar, not the percent
     const progressBar = (
-      <Text wrap="truncate-end">
-        {L.boardSlices(tasks, Math.max(6, inner - 7)).map(x =>
-          x.status === 'doing' ? (
-            // the running stretch shimmers: a lit cell sweeps across it, one cell per frame
-            L.shimmerMask(x.cells, frame, opt('reducedMotion', 0) > 0).map((lit, i) => (
-              <Text key={`slice-${x.card}-${i}`} color={inkOf(x.card, x.status)} dimColor={!lit}>
-                {lit ? '▓' : '░'}
-              </Text>
-            ))
-          ) : (
-            <Text key={`slice-${x.card}`} color={inkOf(x.card, x.status)} dimColor={x.status === 'todo'}>
-              {(x.status === 'todo' ? '░' : '█').repeat(x.cells)}
-            </Text>
-          ),
-        )}
-        <Text bold color={L.gradientAt(progress.ratio)}>
-          {pctText(progress.ratio * 100)}
-        </Text>
-      </Text>
+      <Box>
+        <Box flexGrow={1} flexShrink={1} overflow="hidden">
+          <Text wrap="truncate-end">
+            {L.boardSlices(tasks, Math.max(6, inner - 7)).map(x =>
+              x.status === 'doing' ? (
+                // the running stretch shimmers: a lit cell sweeps across it, one cell per frame
+                L.shimmerMask(x.cells, frame, opt('reducedMotion', 0) > 0).map((lit, i) => (
+                  <Text key={`slice-${x.card}-${i}`} color={inkOf(x.card, x.status)} dimColor={!lit}>
+                    {lit ? '▓' : '░'}
+                  </Text>
+                ))
+              ) : (
+                <Text key={`slice-${x.card}`} color={inkOf(x.card, x.status)} dimColor={x.status === 'todo'}>
+                  {(x.status === 'todo' ? '░' : '█').repeat(x.cells)}
+                </Text>
+              ),
+            )}
+          </Text>
+        </Box>
+        <Box flexShrink={0}>
+          <Text bold color={L.gradientAt(progress.ratio)}>
+            {pctText(progress.ratio * 100)}
+          </Text>
+        </Box>
+      </Box>
     )
     const boardWin = win(
       '▦',
