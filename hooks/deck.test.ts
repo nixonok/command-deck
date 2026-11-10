@@ -294,13 +294,42 @@ test('token saved: a tool shows as unavailable only when it is not connected and
   expect(L.toolAvailable('caveman', servers, undefined, 0)).toBe(true)
 })
 
-test('Unity rules ride in the plan only for Unity projects', () => {
+test('Unity rules ride in the plan only for Unity projects whose steps write C#', () => {
   const plan = { isClear: true, questions: [], prompt: 'x', tasks: [{ title: 'a', tier: 'sonnet' as const, why: '', parallel: false }] }
   expect(L.planContext(plan)).not.toContain('SerializeField')
   expect(L.planContext(plan, { unity: true })).toContain('SerializeField')
+  // a TypeScript fix in a Unity folder, or any step the planner says is not C#, does not pay for the C# rules
+  expect(L.planContext({ ...plan, csharp: false }, { unity: true })).not.toContain('SerializeField')
+  expect(L.planContext({ ...plan, csharp: true }, { unity: true })).toContain('SerializeField')
+  const parsed = L.parsePlan('{"isClear":true,"questions":[],"prompt":"Fix","code":true,"csharp":false,"tasks":[{"title":"Fix null check in lib.ts","tier":"haiku","why":"","parallel":false}]}')
+  expect(parsed?.csharp).toBe(false)
+  expect(L.parsePlan('{"isClear":true,"questions":[],"prompt":"Fix","tasks":[{"title":"Fix","tier":"haiku","why":"","parallel":false}]}')?.csharp).toBeUndefined()
 })
 
 const card = (id: number, title: string, status: Task['status'] = 'todo'): Task => ({ id, title, tier: 'sonnet', why: '', status, tokens: 0, parallel: false })
+
+// words the deck adds per message: the plan text (steps, run rules, rules for the steps, the Unity rules when a
+// step writes C#); the session sections (core, house and caveman) are sent once per chat
+const words = (text: string) => text.split(/\s+/).filter(Boolean).length
+const sample = (tasks: [string, 'haiku' | 'sonnet'][], code: boolean, csharp: boolean) => ({
+  isClear: true,
+  questions: [],
+  prompt: 'Brief: caveman style request.',
+  code,
+  csharp,
+  tasks: tasks.map(([title, tier]) => ({ title, tier, why: 'why', parallel: false })),
+})
+test('injected words: a TypeScript fix in a Unity folder pays no C# rules, and each sample stays in budget', () => {
+  const tinyFix = words(L.planContext(sample([['Fix null check in hooks/lib.ts', 'haiku']], true, false), { unity: true }))
+  const feature = words(L.planContext(sample([['Add pause button to GameHud.cs', 'sonnet'], ['Wire pause to GameManager.cs', 'sonnet']], true, true), { unity: true }))
+  const notes = words(L.planContext(sample([['Draft store release notes in chat', 'sonnet'], ['Summarise changes for the owner', 'haiku']], false, false), { unity: true }))
+  const session = words(`${L.HOUSE_SECTION}\n${G.CORE}\n${L.CAVEMAN_SECTION}`)
+  console.log(`injected words: tiny fix ${tinyFix}, C# feature ${feature}, non-code ${notes}; session sections ${session}`)
+  expect(tinyFix).toBeLessThan(200)
+  expect(notes).toBeLessThan(300)
+  expect(feature).toBeGreaterThan(tinyFix + 400) // the Unity rules are the difference
+  expect(session).toBeLessThan(400)
+})
 
 test('board sync: a TodoWrite list moves cards forward by title', () => {
   const list = [card(1, 'Map data flow'), card(2, 'Fix done tasks staying in ToDo'), card(3, 'Verify')]

@@ -288,6 +288,7 @@ async function writeProgress($: any) {
     `${DIR}/progress-${date}.md`,
     L.progressMarkdown(await read($, goalA), await read($, tasksA), date),
   )
+  await syncSpin($)
 }
 
 async function rulesText($: any): Promise<string> {
@@ -310,6 +311,11 @@ function startSpin($: any) {
 function stopSpin() {
   spin?.cancel()
   spin = null
+}
+// the frame clock runs only while a card is Doing: a board of Todo cards alone has nothing to animate
+async function syncSpin($: any) {
+  if ((await read($, tasksA)).some(t => t.status === 'doing')) startSpin($)
+  else if (!isRunning) stopSpin()
 }
 
 // ------------------------------------------------------------ planning
@@ -750,7 +756,6 @@ async function autoPlan($: any, e: any): Promise<string | 'drop' | null> {
   agentTask.clear()
   mainTask = null
   isAutoBoard = true
-  startSpin($)
   await save($)
   await writeProgress($)
   const extra = pending ? `\nOriginal request: ${pending.ask}\nThe message above answers the questions that were asked.` : ''
@@ -1019,6 +1024,7 @@ export const register: Register = (on, options) => {
     const tool = String(e.tool)
     if (isAutoBoard && !isRunning && !(e as { agentId?: string }).agentId && mainTask === null && agentTask.size === 0 && tool !== 'Agent') {
       mainTask = (await beginTask($, null))?.id ?? null
+      if (mainTask !== null) startSpin($)
     }
     // The board follows the model's own task list: TodoWrite sends the whole list with statuses, TaskCreate one new task,
     // TaskUpdate a status change. New titles become cards, and a card moves forward when its task starts or is completed.
@@ -1122,7 +1128,9 @@ export const register: Register = (on, options) => {
       await writeProgress($)
       const open = left.filter(t => t.status === 'todo')
       // in the background: the answer is already on screen, and a slow or failed call only leaves the cards as they were
-      if (open.length && (e as { reason?: string }).reason === 'answer' && opt('judgeBoard', 1) > 0) void judgeBoard($, String((e as { answer?: string }).answer ?? ''), open)
+      const answer = String((e as { answer?: string }).answer ?? '')
+      // an empty answer (a tool-only turn) settles nothing, so the judge is not called
+      if (open.length && answer.trim() && (e as { reason?: string }).reason === 'answer' && opt('judgeBoard', 1) > 0) void judgeBoard($, answer, open)
     }
     if (!e.agentId && usage && L.toolAvailable('ponytail', undefined, undefined, 0, (await read($, limitsA)).skills)) {
       await addSaving('ponytail', L.cavemanSaved(usage.output_tokens ?? 0, opt('ponytailRatio', 0.45)), $)

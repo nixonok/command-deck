@@ -33,7 +33,7 @@ export function asTier(value: unknown, title: string): Tier {
 
 export const PLANNER_SYSTEM = `You turn a developer's rough request into a precise brief and a task list.
 Return ONLY one JSON object, no prose, no code fence:
-{"isClear":boolean,"questions":string[],"prompt":string,"code":boolean,"tasks":[{"title":string,"tier":"haiku"|"sonnet"|"opus","why":string,"parallel":boolean}]}
+{"isClear":boolean,"questions":string[],"prompt":string,"code":boolean,"csharp":boolean,"tasks":[{"title":string,"tier":"haiku"|"sonnet"|"opus","why":string,"parallel":boolean}]}
 Rules:
 - A question (why, what, how, which is best, explain, compare, advice) is answered in chat, never built: code=false and exactly one task, "Answer in chat" on sonnet. Do not turn a question into build steps.
 - A request that points back at the chat ("fix it", "do that", "the fixes above", "fix the X") means the work the last Assistant message proposed or named; plan exactly that. If the cut chat lines do not show what it means, keep the person's own words in "prompt" and plan one sonnet step; never invent a different task.
@@ -49,6 +49,7 @@ Rules:
 - "title": terse caveman-style wording, short plain words, no filler or articles, under 9 words (for example "Fix null check in HideBannerAds", not "Fix the null reference check that happens in the HideBannerAds method").
 - "why" is 6 words or fewer.
 - code=true when any step changes code, tests, scenes, assets or build config; false when the work is only writing, research or an answer in chat.
+- csharp=true only when a step writes or edits a C# (.cs) file; false for every other kind of work, even inside a game project.
 - parallel=true only when the task edits different files from the tasks next to it and needs nothing they produce; those run at the same time. Split mechanical edits per file so they can run in parallel on Haiku.`
 
 export function plannerPrompt(ask: string, answers: string[], questions: string[] = [], recent: string[] = [], media = 0): string {
@@ -93,7 +94,7 @@ export function parsePlan(raw: string): Plan | null {
         .slice(0, 8)
     : []
   const isClear = data.isClear !== false && questions.length === 0 && tasks.length > 0
-  return { isClear, questions, prompt: String(data.prompt ?? '').trim(), code: data.code !== false, tasks }
+  return { isClear, questions, prompt: String(data.prompt ?? '').trim(), code: data.code !== false, csharp: typeof data.csharp === 'boolean' ? data.csharp : undefined, tasks }
 }
 
 export function taskPrompt(goalPrompt: string, task: Task, done: Task[]): string {
@@ -426,7 +427,10 @@ export function isWorthAttaching(plan: Plan): boolean {
   return plan.tasks.length > 1 || plan.tasks.some(t => t.tier !== 'sonnet')
 }
 
-/** The plan the model reads with the message: steps, how to run them, the step-specific engineering rules and the final pass. */
+/**
+ * The plan the model reads with the message: steps, how to run them, the step-specific engineering rules and the final
+ * pass. The Unity C# rules ride only in a Unity project and only when a step writes C# (an unknown answer keeps them).
+ */
 export function planContext(plan: Plan, opts: { unity?: boolean } = {}): string {
   const steps = plan.tasks.map(
     (t, i) => `${i + 1}. [${TIER_LABEL[t.tier]}${t.parallel ? ' ∥' : ''}] ${t.title}`,
@@ -436,8 +440,8 @@ export function planContext(plan: Plan, opts: { unity?: boolean } = {}): string 
     `Brief: ${plan.prompt}`,
     'Steps:',
     ...steps,
-    'How to run it: Sonnet and Opus steps you do yourself. Every [Haiku] step MUST go to its own subagent with model "haiku", never done in this chat: give it only the step title, the exact file or spot to change and the done condition, no project history. Start all ∥ Haiku steps in one message so they run at once, but only if they edit different files; steps on the same file go one after another. Read-heavy searching goes to an Explore subagent. Long builds and test runs go in the background. After each subagent returns, check its edit by reading the changed spot or running the existing checks. Report which steps ran on Haiku, which ran in parallel, and any failure. Keep the board in sync: give each subagent a step title word for word as its description; for steps you do yourself, call TodoWrite (or TaskCreate/TaskUpdate) with these step titles word for word, and if you have none of those tools, end the reply with a line `Done: <step title>` for each step verified done and `Skip: <step title>` for each step dropped on purpose.',
-    ...(opts.unity ? [UNITY_RULES] : []),
+    'How to run it: do Sonnet and Opus steps yourself. Each [Haiku] step goes to its own subagent with model "haiku", given only its title, the exact spot to change and its done condition, no project history. Start the ∥ Haiku steps together only when they edit different files; steps on one file run in order. Read-heavy search goes to an Explore subagent; long builds and tests run in the background. Check each subagent edit before the next step. Report which steps ran on Haiku, which ran in parallel and any failure. Board: give each subagent its step title word for word as its description; log your own steps with TodoWrite (or TaskCreate/TaskUpdate) under the same titles, or, without those tools, end the reply with `Done: <step title>` for each step verified and `Skip: <step title>` for each step dropped on purpose.',
+    ...(opts.unity && plan.csharp !== false ? [UNITY_RULES] : []),
     ...[guidelineExtras(plan)].filter(Boolean),
     ...(plan.tasks.length > 1 ? [finalPass(plan)] : []),
   ].join('\n')

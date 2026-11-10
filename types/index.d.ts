@@ -20,6 +20,8 @@ export type Plan = {
   prompt: string
   /** false when no step changes code (release notes, research): such a plan gets no smoke test card */
   code?: boolean
+  /** true when a step writes or edits a C# file; the Unity rules ride only in that case */
+  csharp?: boolean
   tasks: { title: string; tier: Tier; why: string; parallel: boolean }[]
 }
 
