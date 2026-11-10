@@ -1366,7 +1366,7 @@ export const register: Register = (on, options) => {
     // ---------------- board
     const twoUp = inner >= 54
     const colW = twoUp ? Math.max(12, Math.floor((inner - 4) / 3) - 4) : inner - 2
-    // the running stretch of the bar and the running card's marker blink together; reducedMotion holds them lit
+    // the running card's marker blinks; reducedMotion holds it lit (the bar's running stretch has its own shimmer)
     const isLit = opt('reducedMotion', 0) > 0 || frame % 2 === 0
     const inkOf = (i: number, status: Task['status']) => (status === 'failed' ? L.FAILED_COLOR : status === 'todo' ? undefined : L.cardColor(i))
     const card = (t: Task) => {
@@ -1410,11 +1410,20 @@ export const register: Register = (on, options) => {
     const progress = L.boardProgress(tasks)
     const progressBar = (
       <Text wrap="truncate-end">
-        {L.boardSlices(tasks, Math.max(6, inner - 7)).map(x => (
-          <Text key={`slice-${x.card}`} color={inkOf(x.card, x.status)} dimColor={x.status === 'todo' || (x.status === 'doing' && !isLit)}>
-            {(x.status === 'todo' ? '░' : x.status === 'doing' ? (isLit ? '▓' : '░') : '█').repeat(x.cells)}
-          </Text>
-        ))}
+        {L.boardSlices(tasks, Math.max(6, inner - 7)).map(x =>
+          x.status === 'doing' ? (
+            // the running stretch shimmers: a lit cell sweeps across it, one cell per frame
+            L.shimmerMask(x.cells, frame, opt('reducedMotion', 0) > 0).map((lit, i) => (
+              <Text key={`slice-${x.card}-${i}`} color={inkOf(x.card, x.status)} dimColor={!lit}>
+                {lit ? '▓' : '░'}
+              </Text>
+            ))
+          ) : (
+            <Text key={`slice-${x.card}`} color={inkOf(x.card, x.status)} dimColor={x.status === 'todo'}>
+              {(x.status === 'todo' ? '░' : '█').repeat(x.cells)}
+            </Text>
+          ),
+        )}
         <Text bold color={L.gradientAt(progress.ratio)}>
           {pctText(progress.ratio * 100)}
         </Text>

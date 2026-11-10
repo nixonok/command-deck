@@ -402,7 +402,8 @@ test('board follows the chat: TodoWrite completes a plan card and adds a new one
   expect(all).toMatch(/DOING 1 \| 1 \| █ \S+ \[Sonnet\] Brand new step/)
   expect(all).toMatch(/DONE 2 \| 2 \| █ ✔ \[Sonnet\] Map the data flow/)
   // the bar above the lanes: one stretch per card in board order (done, todo, doing, done), then the percent
-  expect(all).toMatch(/█+░+▓+█+ +63%/)
+  // the running stretch shows one lit cell of its shimmer; the rest of the bar is done or waiting
+  expect(all).toMatch(/█+░+▓░*█+ +63%/)
   await ui.unmount()
 })
 
@@ -607,6 +608,24 @@ test('a message with images is never held back for questions, and the planner is
   expect(L.mayAsk(unclear, true, 0)).toBe(false)
   expect(L.plannerPrompt('make it look like these', [], [], [], 2)).toContain('attached 2 image(s)')
   expect(L.plannerPrompt('make it look like these', [])).not.toContain('attached')
+})
+
+test('running stretch shimmers: a two-cell highlight sweeps through it, deterministic per frame, held lit by reducedMotion', () => {
+  // empty and one-cell stretches: nothing to sweep past, and no output beyond the cells
+  expect(L.shimmerMask(0, 3)).toEqual([])
+  expect(L.shimmerMask(Number.NaN, 3)).toEqual([])
+  expect(L.shimmerMask(1, 0)).toEqual([true])
+  expect(L.shimmerMask(1, 2)).toEqual([false])
+  // five cells: the highlight enters, crosses, leaves, then rests two frames and starts again
+  const frames = [0, 1, 2, 3, 4, 5, 6, 7].map(f => L.shimmerMask(5, f).map(x => (x ? 'x' : '.')).join(''))
+  expect(frames).toEqual(['x....', 'xx...', '.xx..', '..xx.', '...xx', '....x', '.....', 'x....'])
+  // repeat: same input, same output; a highlight never leaves the stretch
+  for (let f = -20; f < 200; f++) {
+    expect(L.shimmerMask(7, f)).toEqual(L.shimmerMask(7, f))
+    expect(L.shimmerMask(7, f).length).toBe(7)
+  }
+  // reducedMotion: every cell lit on every frame
+  expect(L.shimmerMask(4, 9, true)).toEqual([true, true, true, true])
 })
 
 test('board progress: one colored stretch per card, cells fill the bar exactly, skipped cards leave the count', () => {

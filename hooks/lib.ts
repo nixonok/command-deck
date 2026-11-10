@@ -221,6 +221,20 @@ export function boardSlices(tasks: Task[], width: number): BoardSlice[] {
   return list.map((x, n) => ({ card: x.i, status: x.t.status, cells: edge(n + 1) - edge(n) }))
 }
 
+/**
+ * Lit cells of a running stretch on this frame. A two-cell highlight sweeps across the stretch, then rests for two
+ * frames, so the stretch shimmers instead of blinking. Contract: one boolean per cell, a pure function of
+ * (cells, frame). Invariants: the highlight stays inside the stretch; the sweep repeats every cells + 2 frames; an
+ * empty stretch has no cells. `still` (reducedMotion) lights every cell and never moves.
+ */
+export function shimmerMask(cells: number, frame: number, still = false): boolean[] {
+  const n = Number.isFinite(cells) ? Math.max(0, Math.floor(cells)) : 0
+  if (still) return Array.from({ length: n }, () => true)
+  const period = n + 2
+  const head = ((Math.trunc(frame) % period) + period) % period
+  return Array.from({ length: n }, (_, i) => i === head || i === head - 1)
+}
+
 // red → amber → green, so the percent warms up as cards close
 const STOPS = [
   [0xef, 0x44, 0x44],
