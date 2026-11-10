@@ -1188,7 +1188,8 @@ export const register: Register = (on, options) => {
     // room inside a window: the pane's body less a round border and one column of padding each side
     const cols = Math.max(36, Number((e.props as { bodyColumns?: number })?.bodyColumns) || 60)
     const inner = cols - 4
-    const LBL = 9
+    // one label column for every row, so values line up down the whole pane
+    const LBL = 11
     const barW = Math.max(6, Math.min(28, inner - LBL - 16))
     const pctText = (pct: number) => `${pct.toFixed(0)}%`.padStart(5)
 
@@ -1266,7 +1267,7 @@ export const register: Register = (on, options) => {
 
     const field = (label: string, value: string, color?: string) => (
       <Text wrap="truncate-end">
-        <Text dimColor>{label.padEnd(10)}</Text>
+        <Text dimColor>{label.padEnd(LBL)}</Text>
         <Text color={color} bold={Boolean(color)}>
           {value}
         </Text>
@@ -1304,7 +1305,7 @@ export const register: Register = (on, options) => {
     const used = segs.reduce((n, x) => n + x.cells, 0)
     const ctxBar = segs.length ? (
       <Text wrap="truncate-end">
-        <Text dimColor>{'Context'.padEnd(9)}</Text>
+        <Text dimColor>{'Context'.padEnd(LBL)}</Text>
         <Text bold>{`${limits.ctxPct.toFixed(0)}%`.padStart(4)} </Text>
         {segs.map(x => (
           <Text key={`seg-${x.name}`} color={x.color}>
@@ -1556,19 +1557,19 @@ export const register: Register = (on, options) => {
         tool && L.TOOL_INFO[tool] ? (
           <Box gap={1}>
             <Text wrap="truncate-end" dimColor>
-              {label.padEnd(11)}
+              {label.padEnd(LBL)}
             </Text>
             <Button key={`install-${tool}`} label="Install" onPress={() => askInstall([tool])} />
           </Box>
         ) : (
           <Text wrap="truncate-end" dimColor>
-            {label.padEnd(11)}
+            {label.padEnd(LBL)}
             {'(Not Installed)'}
           </Text>
         )
       ) : (
         <Text wrap="truncate-end">
-          <Text dimColor>{label.padEnd(11)}</Text>
+          <Text dimColor>{label.padEnd(LBL)}</Text>
           <Text color={color} bold>
             {L.compact(tokens).padStart(6)}
           </Text>
@@ -1602,7 +1603,7 @@ export const register: Register = (on, options) => {
           {'─'.repeat(40)}
         </Text>,
         <Text key="total" wrap="truncate-end">
-          <Text bold>{'CMD Deck'.padEnd(11)}</Text>
+          <Text bold>{'CMD Deck'.padEnd(LBL)}</Text>
           <Text color="magenta" bold>
             {L.compact(L.totalSaved(savings, rtkSaved)).padStart(6)}
           </Text>
