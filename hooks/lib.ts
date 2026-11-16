@@ -157,10 +157,39 @@ export function barColor(pct: number): string {
   return pct >= 85 ? 'red' : pct >= 60 ? 'yellow' : 'green'
 }
 
-// A bar is drawn with block characters, as many as fit: each run is far longer than any pane and sits in a Box the
-// layout sizes and clips, so the bar always spans its room and nothing is counted from a column number.
-// shortcut: a run is BAR_CELLS characters, so a pane wider than that leaves the bar short; raise it then
-export const BAR_CELLS = 200
+// A bar is a row of cells. Each cell is a Box the layout sizes, holding one block glyph, so a bar is always one line
+// and always spans its room; filled and empty cells share the glyph, so nothing sits apart. Only the number of cells
+// comes from the pane's column count, and a wrong count costs seams between cells or overlap, never a broken bar.
+export const BAR_GLYPH = '█'
+
+// one colour per meter, so each bar is told apart at a glance; the level (near a limit) shows on the percent instead
+export const METER_COLORS: Record<string, string> = {
+  '5-hour': '#3b82f6',
+  Week: '#f97316',
+  Context: '#a855f7',
+  Haiku: '#22c55e',
+  Sonnet: '#06b6d4',
+  Opus: '#ec4899',
+  Fable: '#eab308',
+  Other: '#9ca3af',
+}
+
+/** Cells for a bar with `columns` of room: one per column in a terminal; elsewhere a block glyph is about 1.6 columns wide. 6 to 60. */
+export function cellCount(columns: number, isTerminal: boolean): number {
+  const n = Math.floor((Number.isFinite(columns) ? columns : 0) / (isTerminal ? 1 : 1.6))
+  return Math.max(6, Math.min(60, n))
+}
+
+/** The colour of each of `n` cells: the fills in order, each its share (any real share keeps one cell, never past the bar), then empty cells. */
+export function barCells(fills: { pct: number; color: string }[], n: number): (string | undefined)[] {
+  const out: (string | undefined)[] = []
+  for (const f of fills) {
+    const k = f.pct > 0 ? Math.min(n - out.length, Math.max(1, Math.round((f.pct / 100) * n))) : 0
+    for (let i = 0; i < k; i++) out.push(f.color)
+  }
+  while (out.length < n) out.push(undefined)
+  return out
+}
 
 // one little bot per model tier so a glance tells who is working: Haiku hums, Sonnet sparkles, Opus powers up. Each blinks
 // now and then; its sparkle cycles the rainbow. Every face is five cells, so the card title never jitters. Only glyphs

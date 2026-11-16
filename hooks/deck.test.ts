@@ -50,8 +50,24 @@ test('model buckets and billed tokens ignore cache reads', () => {
   expect(Math.round(s.find(x => x.name === 'Sonnet')?.pct ?? 0)).toBe(75)
 })
 
-test('bar colours: a level picks green, yellow or red', () => {
+test('bars: a level picks green, yellow or red; every meter has its own colour; cells follow the shares', () => {
   expect([L.barColor(10), L.barColor(70), L.barColor(90)]).toEqual(['green', 'yellow', 'red'])
+  const all = Object.values(L.METER_COLORS)
+  expect(new Set(all).size).toBe(all.length)
+  for (const name of ['5-hour', 'Week', 'Context', 'Haiku', 'Sonnet', 'Opus', 'Fable', 'Other']) expect(L.METER_COLORS[name]).toMatch(/^#[0-9a-f]{6}$/)
+  expect(L.barCells([{ pct: 50, color: 'a' }], 4)).toEqual(['a', 'a', undefined, undefined])
+  expect(L.barCells([{ pct: 0.2, color: 'a' }], 10).filter(Boolean)).toEqual(['a']) // any real share keeps one cell
+  expect(L.barCells([{ pct: 0, color: 'a' }], 3)).toEqual([undefined, undefined, undefined])
+  expect(L.barCells([{ pct: 250, color: 'a' }], 3)).toEqual(['a', 'a', 'a']) // never past the bar
+  expect(L.barCells([{ pct: 60, color: 'a' }, { pct: 60, color: 'b' }], 5)).toEqual(['a', 'a', 'a', 'b', 'b'])
+  expect(L.barCells([{ pct: Number.NaN, color: 'a' }], 2)).toEqual([undefined, undefined])
+  expect(L.barCells([{ pct: 50, color: 'a' }], 0)).toEqual([])
+  // how many cells: one per column in a terminal, fewer where a block glyph is wider than a column, within sane bounds
+  expect(L.cellCount(40, true)).toBe(40)
+  expect(L.cellCount(40, false)).toBe(25)
+  expect(L.cellCount(2, true)).toBe(6)
+  expect(L.cellCount(999, true)).toBe(60)
+  expect(L.cellCount(Number.NaN, false)).toBe(6)
 })
 
 test('models today: Fable is its own bucket, and gets a row only once it has tokens', () => {
@@ -460,24 +476,35 @@ test('board follows the chat: TodoWrite completes a plan card and adds a new one
   const row = boxes.find(b => (b.children ?? []).includes(pctBox))
   expect(row.children.at(-1)).toBe(pctBox)
   const bar = row.children[0]
-  // the bar starts at no width and grows into the room the layout has, clipped to one row: its length never comes from a column count
-  expect(bar.props).toMatchObject({ width: 0, flexGrow: 1, height: 1, overflow: 'hidden' })
-  // done, todo, doing (four shimmer parts), done: every stretch grows by the same total from zero, so the bar always spans its room
-  const runs = bar.children as any[]
-  expect(runs.map(b => [b.props.width, b.props.flexGrow])).toEqual([[0, 4], [0, 4], [0, 1], [0, 1], [0, 1], [0, 1], [0, 4]])
-  expect(runs.every(b => b.props.overflow === 'hidden' && b.props.height === 1)).toBe(true)
-  // each stretch is a long run of one block glyph, far more than fits: the layout cuts it, so any width shows a full bar
-  const glyphs = runs.map(b => textOf(b))
-  expect(glyphs.every(g => g.length === L.BAR_CELLS && new Set(g).size === 1)).toBe(true)
-  expect(glyphs.map(g => g[0]).join('')).toMatch(/^█░[▓░]{4}█$/)
-  // a meter is the same: a fill and the empty rest, as whole percents of the bar that add up to it
+  // the bar starts at no width and grows into the room the layout has: its length never comes from a count of characters
+  expect(bar.props).toMatchObject({ width: 0, flexGrow: 1 })
+  // one line, always: every cell is a Box holding exactly one block glyph, so nothing can wrap into a second row,
+  // and the empty cells use the same glyph as the filled ones, so there is no gap or odd block between them
+  const cellsOf = (b: any): any[] => (b.children ?? []).flatMap((c: any) => (c.type === 'Box' && (c.children ?? []).some((k: any) => k.type === 'Box') ? cellsOf(c) : [c]))
+  const cells = cellsOf(bar)
+  expect(cells.length).toBeGreaterThanOrEqual(4)
+  expect(cells.every(c => c.props.width === 0 && c.props.flexGrow === 1 && c.props.height === undefined && textOf(c) === '█')).toBe(true)
+  // done, todo, doing, done: each card owns an equal group of cells in its own colour; todo cells are the empty grey
+  const groups = (bar.children as any[]).map(g => ({ grow: g.props.flexGrow, colors: [...new Set((g.children as any[]).map(c => c.children[0].props.color))] }))
+  expect(groups).toEqual([
+    { grow: 1, colors: [L.cardColor(0)] },
+    { grow: 1, colors: ['gray'] },
+    { grow: 1, colors: [L.cardColor(2)] },
+    { grow: 1, colors: [L.cardColor(3)] },
+  ])
+  // a meter is one row of cells too: the fill in the meter's own colour, then the empty rest
   await $.turn.complete({ answer: '', usage: { model: 'claude-fable-5-2', input_tokens: 300, output_tokens: 0 } } as any)
   await $.turn.complete({ answer: '', usage: { model: 'claude-sonnet-5-5', input_tokens: 100, output_tokens: 0 } } as any)
   boxes.length = 0
   walk(await ui.drawn())
-  const meter = boxes.find(b => b.props?.width === 0 && b.props?.flexGrow === 1 && b.children?.[0]?.props?.width === '75%')
-  expect(meter.children.map((c: any) => [c.props.width, textOf(c)[0]])).toEqual([['75%', '█'], ['25%', '░']])
-  expect((await ui.findAll({ type: 'Text' })).map(x => x.text).join(' | ')).toMatch(/Fable \|/)
+  const meterOf = (name: string) => {
+    const row = boxes.find(b => (b.children ?? []).length >= 3 && textOf(b.children[0]) === name)
+    return (row.children[1].children as any[]).map(c => c.children[0].props.color)
+  }
+  const fable = meterOf('Fable')
+  expect(fable.filter(c => c === L.METER_COLORS.Fable).length).toBe(Math.round(fable.length * 0.75))
+  expect(fable.slice(-1)).toEqual(['gray'])
+  expect(meterOf('Sonnet').filter(c => c === L.METER_COLORS.Sonnet).length).toBe(Math.round(fable.length * 0.25))
   await ui.unmount()
 })
 
@@ -513,7 +540,7 @@ test('token saved: a Graphify query counts and its row turns live; every tool ke
   // rtk is not on this test's PATH (process.run fails), so its row says so
   expect(all).toMatch(/○ \| RTK \| not installed/)
   // caveman is the deck's own text: on without any skill, and its row never disappears
-  expect(all).toMatch(/● \| Caveman \| on, nothing saved yet/)
+  expect(all).toMatch(/● \| Caveman \| on/)
 })
 
 test('board: an agent takes the card it names, else gets its own Doing card', () => {

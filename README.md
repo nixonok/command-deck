@@ -46,7 +46,7 @@ It is my one-shot attempt to put most of what I know about saving tokens and cos
 
 The header holds Fresh chat and Arrange, and one line that reads at a glance: context, limits, cache, effort and cost. Arrange shows the move buttons on every section (and Reset); otherwise a section header holds only its fold button. Minimized, the pane shrinks to that glance line, the board bar and the running card.
 
-No width in the pane comes from a column count. A bar is a long run of block characters inside a box the layout sizes and clips, so it always spans its full width with as many blocks as fit, at any window size and in any font.
+A bar is a row of cells. Each cell is a box the layout sizes, holding one block glyph, so a bar is always one line and always spans its full width, at any window size and in any font. The pane's column count only decides how many cells a bar has. Every meter has its own colour (5-hour, Week, Context, and each model); for a limit, the percent turns yellow, then red, as it nears the top.
 
 The pictures below are from 1.4; the layout has since changed as described here.
 

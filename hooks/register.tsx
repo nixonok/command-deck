@@ -1318,35 +1318,29 @@ export const register: Register = (on, options) => {
     const Input = ($.ui.resolve(e) as any).Input as ((p: Record<string, unknown>) => any) | undefined
     const now = await $.clock.now()
     const props = e.props as { bodyColumns?: number; placement?: string }
-    // only a hint for what to leave out when the pane is narrow; no width is computed from it
-    const isNarrow = (Number(props?.bodyColumns) || 60) < 44
+    // a hint only: what to leave out when the pane is narrow, and how many cells a bar gets; no width is computed from it
+    const cols = Number(props?.bodyColumns) || 60
+    const isNarrow = cols < 44
+    const isTerminal = e.surface === 'terminal'
     const isStill = opt('reducedMotion', 0) > 0
     // one label column for every row, so values line up down the whole pane
     const LBL = 10
 
-    // one run of a bar: block characters in a Box the layout sizes and clips to one row
-    const run = (key: string, glyph: string, size: { width?: string; flexGrow?: number }, color?: string, isDim = false) => (
-      <Box key={key} width={0} {...size} flexShrink={0} height={1} overflow="hidden">
-        <Text color={color} dimColor={isDim}>
-          {glyph.repeat(L.BAR_CELLS)}
-        </Text>
+    // a row of cells: each a Box the layout sizes, holding one block glyph (so a bar cannot wrap into a second line)
+    const cellRow = (key: string, cells: { color?: string; isDim?: boolean }[], grow = 1) => (
+      <Box key={key} width={0} flexGrow={grow} overflow="hidden">
+        {cells.map((c, i) => (
+          <Box key={`${key}-${i}`} width={0} flexGrow={1} overflow="hidden">
+            <Text color={c.color ?? 'gray'} dimColor={c.isDim ?? !c.color}>
+              {L.BAR_GLYPH}
+            </Text>
+          </Box>
+        ))}
       </Box>
     )
-    // a bar: its fills side by side, each a share of the bar's own width, then the empty rest
-    const track = (key: string, fills: { pct: number; color: string }[]) => {
-      let room = 100
-      return (
-        <Box key={key} width={0} flexGrow={1} minWidth={4} height={1} overflow="hidden">
-          {fills.map((f, i) => {
-            // a width is a whole percent; any real share keeps at least one, and together they never pass the bar
-            const pct = f.pct > 0 ? Math.min(room, Math.max(1, Math.round(f.pct))) : 0
-            room -= pct
-            return pct > 0 ? run(`${key}-${i}`, '█', { width: `${pct}%` }, f.color) : null
-          })}
-          {room > 0 ? run(`${key}-rest`, '░', { width: `${room}%` }, undefined, true) : null}
-        </Box>
-      )
-    }
+    // a meter row's fixed parts: frame and padding 4, label and its gap 11, percent and its gap 5
+    const meterCells = L.cellCount(cols - 20, isTerminal)
+    const track = (key: string, fills: { pct: number; color: string }[]) => cellRow(key, L.barCells(fills, meterCells).map(color => ({ color })))
     const label = (text: string, color?: string) => (
       <Box width={LBL} flexShrink={0}>
         <Text color={color} bold={Boolean(color)} dimColor={!color} wrap="truncate-end">
@@ -1354,27 +1348,31 @@ export const register: Register = (on, options) => {
         </Text>
       </Box>
     )
-    // one line per meter: label, bar, percent, tail
-    const meter = (name: string, pct: number | undefined, tail: string, color?: string) => (
-      <Box key={`meter-${name}`} gap={1}>
-        {label(name, color)}
-        {pct === undefined ? (
-          <Text dimColor>n/a</Text>
-        ) : (
-          [
-            track(`track-${name}`, [{ pct, color: color ?? L.barColor(pct) }]),
-            <Box key={`pct-${name}`} width={4} flexShrink={0} justifyContent="flex-end">
-              <Text bold>{`${pct.toFixed(0)}%`}</Text>
-            </Box>,
-            tail && !isNarrow ? (
-              <Box key={`tail-${name}`} flexShrink={0}>
-                <Text dimColor>{tail}</Text>
-              </Box>
-            ) : null,
-          ]
-        )}
-      </Box>
-    )
+    // one line per meter: label, bar, percent, tail. The bar and label wear the meter's own colour; for a limit, the
+    // percent turns yellow then red as it nears the top
+    const meter = (name: string, pct: number | undefined, tail: string, isLimit = false) => {
+      const color = L.METER_COLORS[name] ?? L.METER_COLORS.Other!
+      return (
+        <Box key={`meter-${name}`} gap={1}>
+          {label(name, color)}
+          {pct === undefined ? (
+            <Text dimColor>n/a</Text>
+          ) : (
+            [
+              track(`track-${name}`, [{ pct, color }]),
+              <Box key={`pct-${name}`} width={4} flexShrink={0} justifyContent="flex-end">
+                <Text bold color={isLimit && pct >= 60 ? L.barColor(pct) : undefined}>{`${pct.toFixed(0)}%`}</Text>
+              </Box>,
+              tail && !isNarrow ? (
+                <Box key={`tail-${name}`} flexShrink={0}>
+                  <Text dimColor>{tail}</Text>
+                </Box>
+              ) : null,
+            ]
+          )}
+        </Box>
+      )
+    }
     const field = (name: string, value: string, color?: string) => (
       <Box key={`field-${name}`} gap={1}>
         {label(name)}
@@ -1460,15 +1458,20 @@ export const register: Register = (on, options) => {
 
     // ---------------- board progress: one equal stretch per card, in the card's colour (equal growth from zero width)
     const inkOf = (i: number, status: Task['status']) => (status === 'failed' ? L.FAILED_COLOR : status === 'todo' ? undefined : L.cardColor(i))
-    const SHIMMER = 4
+    const slices = L.boardSlices(tasks)
+    // the board row's fixed parts: frame and padding 4, percent and its gap 5; every card gets the same number of cells
+    const perCard = Math.max(1, Math.floor(L.cellCount(cols - 9, isTerminal) / Math.max(1, slices.length)))
     const progressBar = (
       <Box key="board-bar" gap={1}>
-        <Box width={0} flexGrow={1} minWidth={4} height={1} overflow="hidden">
-          {L.boardSlices(tasks).map(x =>
-            x.status === 'doing'
-              ? // the running stretch shimmers: a lit part sweeps across it, one step per frame
-                L.shimmerMask(SHIMMER, frame, isStill).map((lit, i) => run(`slice-${x.card}-${i}`, lit ? '▓' : '░', { flexGrow: 1 }, inkOf(x.card, x.status), !lit))
-              : run(`slice-${x.card}`, x.status === 'todo' ? '░' : '█', { flexGrow: SHIMMER }, inkOf(x.card, x.status), x.status === 'todo'),
+        <Box width={0} flexGrow={1} overflow="hidden">
+          {slices.map(x =>
+            cellRow(
+              `slice-${x.card}`,
+              x.status === 'doing'
+                ? // the running stretch shimmers: a lit part sweeps across it, one cell per frame
+                  L.shimmerMask(perCard, frame, isStill).map(lit => ({ color: inkOf(x.card, x.status), isDim: !lit }))
+                : Array.from({ length: perCard }, () => ({ color: inkOf(x.card, x.status) })),
+            ),
           )}
         </Box>
         <Box flexShrink={0}>
@@ -1538,10 +1541,10 @@ export const register: Register = (on, options) => {
     const segs = opt('contextBreakdown', 0) > 0 ? L.ctxSegments(limits.parts ?? [], limits.ctxWindow).sort((x, y) => y.tokens - x.tokens) : []
     const ctxBar = segs.length ? (
       <Box key="meter-Context" gap={1}>
-        {label('Context')}
+        {label('Context', L.METER_COLORS.Context)}
         {track('track-Context', segs)}
         <Box width={4} flexShrink={0} justifyContent="flex-end">
-          <Text bold>{`${limits.ctxPct.toFixed(0)}%`}</Text>
+          <Text bold color={limits.ctxPct >= 60 ? L.barColor(limits.ctxPct) : undefined}>{`${limits.ctxPct.toFixed(0)}%`}</Text>
         </Box>
         {isNarrow ? null : (
           <Box flexShrink={0}>
@@ -1574,9 +1577,9 @@ export const register: Register = (on, options) => {
       'USAGE',
       'blue',
       [
-        meter('5-hour', limits.fiveHour?.pct, fiveTail),
-        meter('Week', limits.sevenDay?.pct, weekTail),
-        ctxBar ?? meter('Context', limits.ctxWindow ? limits.ctxPct : undefined, ctxTail),
+        meter('5-hour', limits.fiveHour?.pct, fiveTail, true),
+        meter('Week', limits.sevenDay?.pct, weekTail, true),
+        ctxBar ?? meter('Context', limits.ctxWindow ? limits.ctxPct : undefined, ctxTail, true),
         ...ctxLegend,
         field('Cache', cacheText, cacheColor),
         ...(opt('autoEffort', 1) > 0 ? [field('Effort', effort ? `${effort} for this request` : 'your own level', effort ? 'cyan' : undefined)] : []),
@@ -1587,12 +1590,11 @@ export const register: Register = (on, options) => {
 
     // ---------------- models
     const shown = L.shares(usage)
-    const modelColor: Record<string, string> = { Haiku: 'green', Sonnet: 'cyan', Opus: 'magenta', Fable: 'yellow', Other: 'gray' }
     const modelsWin = win(
       '◉',
       'MODELS TODAY',
       'magenta',
-      shown.every(s => s.tokens === 0) ? <Text dimColor>no turns counted yet</Text> : shown.map(s => meter(s.name, s.pct, L.compact(s.tokens), modelColor[s.name])),
+      shown.every(s => s.tokens === 0) ? <Text dimColor>no turns counted yet</Text> : shown.map(s => meter(s.name, s.pct, L.compact(s.tokens))),
       undefined,
       'MODELS',
     )
@@ -1779,7 +1781,7 @@ export const register: Register = (on, options) => {
             <Text dimColor>{`  ≈ $${((tokens * price) / 1_000_000).toFixed(2)}`}</Text>
           </Text>
         ) : (
-          <Text dimColor>on, nothing saved yet</Text>
+          <Text dimColor>on</Text>
         )}
       </Box>
     )
