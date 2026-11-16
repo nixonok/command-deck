@@ -128,13 +128,14 @@ export type ModelUsageLike = {
   cache_creation_input_tokens?: number
 }
 
-export type ModelBucket = 'Haiku' | 'Sonnet' | 'Opus' | 'Other'
+export type ModelBucket = 'Haiku' | 'Sonnet' | 'Opus' | 'Fable' | 'Other'
 
 export function modelBucket(model: string | undefined): ModelBucket {
   const m = (model ?? '').toLowerCase()
   if (m.includes('haiku')) return 'Haiku'
   if (m.includes('sonnet')) return 'Sonnet'
   if (m.includes('opus')) return 'Opus'
+  if (m.includes('fable')) return 'Fable'
   return 'Other'
 }
 
@@ -144,10 +145,11 @@ export function billed(u: ModelUsageLike): number {
 }
 
 export function shares(map: Record<string, number>): { name: ModelBucket; pct: number; tokens: number }[] {
-  const names: ModelBucket[] = ['Haiku', 'Sonnet', 'Opus', 'Other']
+  const names: ModelBucket[] = ['Haiku', 'Sonnet', 'Opus', 'Fable', 'Other']
   const total = names.reduce((sum, n) => sum + (map[n] ?? 0), 0)
+  // Fable and Other get a row only once they have tokens: not every account has them
   return names
-    .filter(n => n !== 'Other' || (map.Other ?? 0) > 0)
+    .filter(n => (n !== 'Other' && n !== 'Fable') || (map[n] ?? 0) > 0)
     .map(name => ({ name, tokens: map[name] ?? 0, pct: total ? ((map[name] ?? 0) / total) * 100 : 0 }))
 }
 
@@ -155,21 +157,10 @@ export function barColor(pct: number): string {
   return pct >= 85 ? 'red' : pct >= 60 ? 'yellow' : 'green'
 }
 
-// Bars are Boxes with a background, sized by the layout, so they span their room at any pane width and in any font.
-// A background takes a hex colour on every surface; the named colours are for text.
-const FILLS: Record<string, string> = { green: '#22c55e', yellow: '#eab308', red: '#ef4444', cyan: '#06b6d4', magenta: '#d946ef', blue: '#3b82f6', white: '#e5e7eb', gray: '#6b7280' }
-export const fillOf = (color: string): string => (color.startsWith('#') ? color : (FILLS[color] ?? FILLS.gray!))
-// the unfilled part of a bar: the engine's own Progress draws its track with this theme key
-export const TRACK = 'userMessageBackground'
-
-/** A hex colour scaled toward black: 1 leaves it, 0 is black. Anything that is not #rrggbb comes back unchanged. */
-export function shade(hex: string, k: number): string {
-  const m = /^#([0-9a-f]{6})$/i.exec(hex)
-  if (!m) return hex
-  const f = Math.min(1, Math.max(0, Number.isFinite(k) ? k : 1))
-  const n = Number.parseInt(m[1]!, 16)
-  return `#${[n >> 16, (n >> 8) & 255, n & 255].map(c => Math.round(c * f).toString(16).padStart(2, '0')).join('')}`
-}
+// A bar is drawn with block characters, as many as fit: each run is far longer than any pane and sits in a Box the
+// layout sizes and clips, so the bar always spans its room and nothing is counted from a column number.
+// shortcut: a run is BAR_CELLS characters, so a pane wider than that leaves the bar short; raise it then
+export const BAR_CELLS = 200
 
 // one little bot per model tier so a glance tells who is working: Haiku hums, Sonnet sparkles, Opus powers up. Each blinks
 // now and then; its sparkle cycles the rainbow. Every face is five cells, so the card title never jitters. Only glyphs
@@ -456,32 +447,14 @@ export const isTextSearch = (tool: string, command?: unknown): boolean =>
 
 // The rules are written out here, not left to a skill: a skill has to be installed, listed and loaded with a tool call,
 // and each of those failed in some chats. Inline text is in every chat from the first reply and costs no round trip.
-export const CAVEMAN_SECTION = `Caveman mode is ON: Command Deck keeps it on in every chat. Every reply, the first included: short blunt sentences, small words, no filler, no praise, no preamble, no recap of the request. Drop articles where it still reads smooth. Three bullets at most per list. Code, commands, paths, numbers, error text and names stay exact. "stop caveman" or "normal mode" from the person turns it off.`
+export const CAVEMAN_SECTION = `Caveman mode is ON: Command Deck keeps it on in every chat. Every reply, the first included: short blunt sentences, small words, no filler, no praise, no preamble, no recap of the request. Drop articles where it still reads smooth. Long reports and summaries too. Three bullets at most per list. Code, commands, paths, numbers, error text and names stay exact. "stop caveman" or "normal mode" from the person turns it off.`
 
 // the section promises these words turn it off, so the deck stops reminding and counting for the rest of the chat
 export const CAVEMAN_OFF = /\b(stop caveman|normal mode)\b/i
 
-// rides with the next message only after a reply slid back into long sentences
-export const CAVEMAN_REMINDER = 'Caveman mode is still on: short blunt sentences, small words, no filler.'
-
-/**
- * True when a reply slid out of caveman style: its prose averages long sentences. Contract: code fences, inline code,
- * table rows and board lines are not prose; a reply under `minWords` of prose is never drift (too little to judge).
- */
-export function cavemanDrift(answer: unknown, maxWords = 16, minWords = 60): boolean {
-  const prose = String(answer ?? '')
-    .replace(/```[\s\S]*?```/g, ' ')
-    .replace(/`[^`\n]*`/g, ' x ')
-    .split('\n')
-    .filter(l => !/^\s*(\||(todo|done|skip|skipped):)/i.test(l))
-    .join('\n')
-  const sentences = prose
-    .split(/(?<=[.!?:;])\s+|\n+/)
-    .map(x => x.split(/\s+/).filter(w => /[a-z0-9]/i.test(w)).length)
-    .filter(n => n > 0)
-  const words = sentences.reduce((a, b) => a + b, 0)
-  return words >= minWords && words / sentences.length > maxWords
-}
+// Rides with every typed message. A rule that sits once in the system prompt fades as a chat grows and gives way in
+// long reports; a line beside the newest message does not. About 20 tokens a message, far less than one wordy reply.
+export const CAVEMAN_REMINDER = 'Caveman mode is on for this reply, long reports and summaries included: short blunt sentences, small words, no filler, drop articles. Code and names stay exact.'
 
 // ---------------------------------------------------------------- effort routing
 // The planner's Haiku pass already reads every real request, so it also says how hard the main model must think; the

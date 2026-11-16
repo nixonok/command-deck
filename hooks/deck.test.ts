@@ -50,15 +50,18 @@ test('model buckets and billed tokens ignore cache reads', () => {
   expect(Math.round(s.find(x => x.name === 'Sonnet')?.pct ?? 0)).toBe(75)
 })
 
-test('bar colours: a level picks green, yellow or red; a fill is always a hex colour; shade darkens toward black', () => {
+test('bar colours: a level picks green, yellow or red', () => {
   expect([L.barColor(10), L.barColor(70), L.barColor(90)]).toEqual(['green', 'yellow', 'red'])
-  expect(L.fillOf('green')).toBe('#22c55e')
-  expect(L.fillOf('#123456')).toBe('#123456')
-  expect(L.fillOf('no-such-colour')).toMatch(/^#[0-9a-f]{6}$/)
-  expect(L.shade('#804020', 0.5)).toBe('#402010')
-  expect(L.shade('#804020', 1)).toBe('#804020')
-  expect(L.shade('#804020', Number.NaN)).toBe('#804020')
-  expect(L.shade('red', 0.5)).toBe('red')
+})
+
+test('models today: Fable is its own bucket, and gets a row only once it has tokens', () => {
+  expect(L.modelBucket('claude-fable-5-2')).toBe('Fable')
+  expect(L.modelBucket('claude-opus-5-5')).toBe('Opus')
+  expect(L.modelBucket('something-else')).toBe('Other')
+  expect(L.shares({ Sonnet: 10 }).map(s => s.name)).toEqual(['Haiku', 'Sonnet', 'Opus'])
+  const withFable = L.shares({ Sonnet: 25, Fable: 75 })
+  expect(withFable.map(s => s.name)).toEqual(['Haiku', 'Sonnet', 'Opus', 'Fable'])
+  expect(withFable.find(s => s.name === 'Fable')?.pct).toBe(75)
 })
 
 test('graft saving is read from its own line; caveman saving follows the ratio', () => {
@@ -426,6 +429,9 @@ test('board follows the chat: TodoWrite completes a plan card and adds a new one
   on('process.run', () => ({ value: { stdout: '', stderr: '', code: 1 } }) as any)
   on('session.usage', () => ({ value: undefined }) as any)
   on('tool.call', () => ({ result: {} }) as any)
+  on('turn.complete', () => ({ text: '' }) as any)
+  on('fs.write', () => ({ value: undefined }) as any)
+  on('fs.exists', () => ({ value: false }) as any)
   await $.session.start({ cwd: '/tmp/x', surface: null, isInteractive: false } as any)
   await $.tool.call({
     tool: 'TodoWrite',
@@ -454,19 +460,24 @@ test('board follows the chat: TodoWrite completes a plan card and adds a new one
   const row = boxes.find(b => (b.children ?? []).includes(pctBox))
   expect(row.children.at(-1)).toBe(pctBox)
   const bar = row.children[0]
-  expect(bar.props).toMatchObject({ flexGrow: 1, height: 1, backgroundColor: L.TRACK, overflow: 'hidden' })
-  // done, todo, doing (four shimmer parts), done: every stretch grows by the same total, so the bar always spans its room
-  const grow = (bar.children as any[]).map(b => b.props.flexGrow)
-  expect(grow).toEqual([4, 4, 1, 1, 1, 1, 4])
-  expect(bar.children[0].props.backgroundColor).toBe(L.cardColor(0))
-  expect(bar.children[1].props.backgroundColor).toBeUndefined() // todo: the track shows through
-  expect(bar.children.at(-1).props.backgroundColor).toBe(L.cardColor(3))
-  // nothing in the pane is drawn by repeating block characters, at any width
-  for (const bodyColumns of [24, 40, 80, 200]) {
-    const sized = await $.ui.mount({ plugin: 'command-deck', surface: 'desktop', component: 'Pane', props: { bodyColumns }, requestId: 'command-deck' } as any)
-    expect((await sized.findAll({ type: 'Text' })).map(x => x.text).join('')).not.toMatch(/[█░▓]{2}/)
-    await sized.unmount()
-  }
+  // the bar starts at no width and grows into the room the layout has, clipped to one row: its length never comes from a column count
+  expect(bar.props).toMatchObject({ width: 0, flexGrow: 1, height: 1, overflow: 'hidden' })
+  // done, todo, doing (four shimmer parts), done: every stretch grows by the same total from zero, so the bar always spans its room
+  const runs = bar.children as any[]
+  expect(runs.map(b => [b.props.width, b.props.flexGrow])).toEqual([[0, 4], [0, 4], [0, 1], [0, 1], [0, 1], [0, 1], [0, 4]])
+  expect(runs.every(b => b.props.overflow === 'hidden' && b.props.height === 1)).toBe(true)
+  // each stretch is a long run of one block glyph, far more than fits: the layout cuts it, so any width shows a full bar
+  const glyphs = runs.map(b => textOf(b))
+  expect(glyphs.every(g => g.length === L.BAR_CELLS && new Set(g).size === 1)).toBe(true)
+  expect(glyphs.map(g => g[0]).join('')).toMatch(/^█░[▓░]{4}█$/)
+  // a meter is the same: a fill and the empty rest, as whole percents of the bar that add up to it
+  await $.turn.complete({ answer: '', usage: { model: 'claude-fable-5-2', input_tokens: 300, output_tokens: 0 } } as any)
+  await $.turn.complete({ answer: '', usage: { model: 'claude-sonnet-5-5', input_tokens: 100, output_tokens: 0 } } as any)
+  boxes.length = 0
+  walk(await ui.drawn())
+  const meter = boxes.find(b => b.props?.width === 0 && b.props?.flexGrow === 1 && b.children?.[0]?.props?.width === '75%')
+  expect(meter.children.map((c: any) => [c.props.width, textOf(c)[0]])).toEqual([['75%', '█'], ['25%', '░']])
+  expect((await ui.findAll({ type: 'Text' })).map(x => x.text).join(' | ')).toMatch(/Fable \|/)
   await ui.unmount()
 })
 
@@ -838,15 +849,8 @@ test('effort routing: the planner level rides on the main request, a subagent re
   expect(sent.at(-1)).toBe('high')
 })
 
-test('caveman: the rules are inline with no skill to load, and only a reply that slid into long sentences earns a reminder', async ($, on) => {
+test('caveman: the rules are inline with no skill to load, and every typed message carries the reminder until "normal mode"', async ($, on) => {
   expect(L.CAVEMAN_SECTION).not.toMatch(/skill/i)
-  const terse = Array.from({ length: 14 }, () => 'Bug sat in save path. Null check was missing. Fixed it. Tests pass now.').join(' ')
-  const wordy = Array.from({ length: 4 }, () => 'The underlying problem turned out to be that the save path never validated the incoming payload before attempting to write it to disk, which meant that an empty file could slip through unnoticed.').join(' ')
-  expect(L.cavemanDrift(terse)).toBe(false)
-  expect(L.cavemanDrift(wordy)).toBe(true)
-  expect(L.cavemanDrift(`\`\`\`\n${wordy}\n\`\`\``)).toBe(false) // code is not prose
-  expect(L.cavemanDrift('One long sentence but far too little text to judge the style of a whole reply by it.')).toBe(false)
-  expect(L.cavemanDrift(undefined)).toBe(false)
   boot(on)
   mock.store(on, {})
   const seen: string[][] = []
@@ -854,19 +858,17 @@ test('caveman: the rules are inline with no skill to load, and only a reply that
     seen.push([...(e.context ?? [])])
     return { text: e.text } as any
   })
-  on('turn.complete', () => ({ text: '' }) as any)
   await $.session.start({ cwd: '/tmp/x', surface: null, isInteractive: false } as any)
-  await $.turn.complete({ answer: terse } as any)
   await $.prompt.submit(human('do the next one'))
-  await $.turn.complete({ answer: wordy } as any)
-  await $.prompt.submit(human('do the next one'))
+  await $.prompt.submit(human('/code-review'))
+  // a prompt the deck or a task sent is not the person's message: nothing rides with it
+  await $.prompt.submit({ text: 'task finished', origin: { kind: 'task' }, wait: false } as any)
   await $.prompt.submit(human('and the one after'))
-  expect(seen).toEqual([[], [L.CAVEMAN_REMINDER], []])
-  // the section promises "normal mode" turns it off: from then on a long reply earns no reminder in this chat
+  expect(seen).toEqual([[L.CAVEMAN_REMINDER], [], [], [L.CAVEMAN_REMINDER]])
+  // the section promises "normal mode" turns it off: from that message on nothing is added in this chat
   await $.prompt.submit(human('normal mode please'))
-  await $.turn.complete({ answer: wordy } as any)
   await $.prompt.submit(human('do the next one'))
-  expect(seen.slice(3)).toEqual([[], []])
+  expect(seen.slice(4)).toEqual([[], []])
 })
 
 test('planner gate: a plain one-line question skips the planner call, a request with a build word does not', async ($, on) => {

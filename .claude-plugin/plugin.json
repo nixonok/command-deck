@@ -1,6 +1,6 @@
 {
   "name": "command-deck",
-  "version": "1.5.0",
+  "version": "1.5.1",
   "icon": "./.claude-plugin/icon.png",
   "description": "Plan with the right model and effort per task, kanban board, usage and git panel, caveman mode, handoff and project memory.",
   "types": "./types/index.d.ts",
@@ -34,6 +34,12 @@
       "title": "Save mode at usage limit %",
       "description": "When the 5-hour or weekly limit passes this percent, effort routing sends nothing above medium. 0 turns it off.",
       "default": 80
+    },
+    "contextBreakdown": {
+      "type": "number",
+      "title": "Context breakdown in Usage (1 on, 0 off)",
+      "description": "Split the Context bar by what fills it (system prompt, tools, messages) and list each part under it. Off shows one plain bar.",
+      "default": 0
     },
     "autoCompactPct": {
       "type": "number",

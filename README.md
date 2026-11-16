@@ -34,7 +34,7 @@ It is my one-shot attempt to put most of what I know about saving tokens and cos
 - **Usage and git panel.** Context bar, daily usage, branch, ahead/behind, changed files.
 - **Clean code toggle.** Engineering rules added to every chat. Step-specific rules (bug, feature, refactor, design, perf, security, risky, test) are picked per task and model by plain keywords, with one final review pass at the end. No extra model call.
 - **Effort routing.** The planner also says how hard each request needs the model to think, and the deck sends that level with the turn: a rename runs at low, a hard bug at your own level. Nothing is added to the prompt and no skill is loaded. Some models pay for their whole cache again when the level changes: the deck watches the requests it sends at a changed level, and after two that were paid for again it leaves that model family alone. Until a family is proven, the level only changes while the context is under 80k tokens, so finding out has a bounded cost.
-- **Caveman mode.** Short, blunt replies to save output tokens, on in every chat. The rules are part of the deck, so no skill has to be installed or loaded; a reply that slides back into long sentences earns a one-line reminder on the next message.
+- **Caveman mode.** Short, blunt replies to save output tokens, on in every chat. The rules are part of the deck, so no skill has to be installed or loaded; every typed message carries a one-line reminder (about 20 tokens), because a rule that sits once in the system prompt fades in a long chat. Saying "normal mode" turns it off for the chat.
 - **Graft first.** In a repo Graft has indexed, the deck tells the model to search with Graft, counts Graft's CLI answers as well as its MCP ones, never moves it behind tool search, and adds one short reminder after a plain grep in a turn where Graft sat unused.
 - **Project memory.** Each handoff also gathers up to three lasting facts (a command that works, a trap, a decision) into `.claude/deck/memory.md`, and every later handoff carries them.
 - **Handoff memory.** Writes a handoff note and starts a fresh chat at a context % you choose, or on a new topic.
@@ -46,7 +46,7 @@ It is my one-shot attempt to put most of what I know about saving tokens and cos
 
 The header holds Fresh chat and Arrange, and one line that reads at a glance: context, limits, cache, effort and cost. Arrange shows the move buttons on every section (and Reset); otherwise a section header holds only its fold button. Minimized, the pane shrinks to that glance line, the board bar and the running card.
 
-Nothing in the pane is counted in characters. Bars are boxes the layout sizes and text wraps in the room it gets, so a bar always spans its full width, at any window size and in any font.
+No width in the pane comes from a column count. A bar is a long run of block characters inside a box the layout sizes and clips, so it always spans its full width with as many blocks as fit, at any window size and in any font.
 
 The pictures below are from 1.4; the layout has since changed as described here.
 
@@ -58,7 +58,7 @@ Above the lanes a bar shows the whole board: one colored stretch per card, in th
 
 <p align="center"><img src="assets/board.png" alt="Kanban board with TODO, DOING and DONE lanes, each task tagged Haiku or Sonnet" width="420"></p>
 
-Usage shows the 5-hour and weekly limits, a context bar split by what fills it, and the cache state.
+Usage shows the 5-hour and weekly limits, the context bar and the cache state. `contextBreakdown` splits the context bar by what fills it. Models today has a row for Haiku, Sonnet and Opus, and for Fable once it has tokens.
 
 <p align="center"><img src="assets/usage.png" alt="Usage panel with limits, context breakdown and cache status" width="420"></p>
 
@@ -145,6 +145,7 @@ Change a value in any of these ways:
 | `autoStart` | 1 | Open the pane in every new chat. |
 | `caveman` | 1 | Short blunt replies in every chat. 0 is off. |
 | `autoEffort` | 1 | Effort routing: 0 off, 1 only lowers (never above your own `/effort` level), 2 may also raise. |
+| `contextBreakdown` | 0 | 1 splits the Context bar by what fills it and lists the parts. |
 | `saveModePct` | 80 | Past this percent of the 5-hour or weekly limit, effort routing sends nothing above medium. 0 is off. |
 | `reducedMotion` | 0 | 1 holds the Doing-card bots still (terminals have no reduced-motion setting). |
 | `coldGuard` | 1 | 0 off, 1 warn, 2 also hold the first send. |

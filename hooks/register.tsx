@@ -71,9 +71,7 @@ let namedLevel: L.Effort | undefined
 // per model family: a switch of model starts clean, so the new family's first request is never read as a level change
 let lastStep: Record<string, { sent?: string; session?: string }> = {}
 let effortTrust: Record<string, L.EffortTrust> = {}
-// caveman: the last reply slid into long sentences, so the next message carries a one-line reminder; the person's
-// "normal mode" turns the reminder and the count off for the rest of the chat
-let isDrifting = false
+// caveman: the person's "normal mode" turns the reminder and the count off for the rest of the chat
 let isCavemanOff = false
 let spin: { cancel: () => void } | null = null
 const completions = new Map<string, Done>()
@@ -673,7 +671,6 @@ async function runClean($: any, ask: CleanAsk): Promise<string> {
     deferServers = new Set()
     usedServers.clear()
     graftNudges = 0
-    isDrifting = false
     isCavemanOff = false
     turnEffort = undefined
     lastStep = {}
@@ -1051,11 +1048,8 @@ export const register: Register = (on, options) => {
     graftNudgedTurn = false
     if (!e.text.startsWith('/')) await decideTools($, e.text).catch(() => undefined)
     const added = [...(planned ? [planned] : [])]
-    // kept until a typed message can carry it: a prompt the deck or a task sent is not the person's next message
-    if (isDrifting && !isCavemanOff && opt('caveman', 1) > 0 && HUMAN.has(String(e.origin?.kind)) && !e.text.startsWith('/')) {
-      added.push(L.CAVEMAN_REMINDER)
-      isDrifting = false
-    }
+    // every typed message carries the caveman line: beside the newest message it holds where the system prompt fades
+    if (!isCavemanOff && opt('caveman', 1) > 0 && HUMAN.has(String(e.origin?.kind)) && !e.text.startsWith('/')) added.push(L.CAVEMAN_REMINDER)
     if (added.length) return next({ ...e, context: [...(e.context ?? []), ...added] })
     return next(e)
   })
@@ -1219,7 +1213,6 @@ export const register: Register = (on, options) => {
       lastTouch = await $.clock.now()
       lastReal = lastTouch
       coldWarned = false
-      isDrifting = !isCavemanOff && L.cavemanDrift(lastAnswer)
       void refreshRtk($)
     }
     await addUsage($, usage?.model, usage)
@@ -1331,17 +1324,26 @@ export const register: Register = (on, options) => {
     // one label column for every row, so values line up down the whole pane
     const LBL = 10
 
-    // a bar: a track with its fills side by side, each a share of the track's own width
+    // one run of a bar: block characters in a Box the layout sizes and clips to one row
+    const run = (key: string, glyph: string, size: { width?: string; flexGrow?: number }, color?: string, isDim = false) => (
+      <Box key={key} width={0} {...size} flexShrink={0} height={1} overflow="hidden">
+        <Text color={color} dimColor={isDim}>
+          {glyph.repeat(L.BAR_CELLS)}
+        </Text>
+      </Box>
+    )
+    // a bar: its fills side by side, each a share of the bar's own width, then the empty rest
     const track = (key: string, fills: { pct: number; color: string }[]) => {
       let room = 100
       return (
-        <Box key={key} flexGrow={1} flexShrink={1} minWidth={4} height={1} backgroundColor={L.TRACK} overflow="hidden">
+        <Box key={key} width={0} flexGrow={1} minWidth={4} height={1} overflow="hidden">
           {fills.map((f, i) => {
-            // a width is a whole percent; any real share keeps at least one, and together they never pass the track
+            // a width is a whole percent; any real share keeps at least one, and together they never pass the bar
             const pct = f.pct > 0 ? Math.min(room, Math.max(1, Math.round(f.pct))) : 0
             room -= pct
-            return pct > 0 ? <Box key={`${key}-${i}`} width={`${pct}%`} height={1} backgroundColor={L.fillOf(f.color)} /> : null
+            return pct > 0 ? run(`${key}-${i}`, '█', { width: `${pct}%` }, f.color) : null
           })}
+          {room > 0 ? run(`${key}-rest`, '░', { width: `${room}%` }, undefined, true) : null}
         </Box>
       )
     }
@@ -1456,22 +1458,17 @@ export const register: Register = (on, options) => {
       </Text>
     ) : null
 
-    // ---------------- board progress: one equal stretch per card, in the card's colour
+    // ---------------- board progress: one equal stretch per card, in the card's colour (equal growth from zero width)
     const inkOf = (i: number, status: Task['status']) => (status === 'failed' ? L.FAILED_COLOR : status === 'todo' ? undefined : L.cardColor(i))
     const SHIMMER = 4
     const progressBar = (
       <Box key="board-bar" gap={1}>
-        <Box flexGrow={1} flexShrink={1} minWidth={4} height={1} backgroundColor={L.TRACK} overflow="hidden">
+        <Box width={0} flexGrow={1} minWidth={4} height={1} overflow="hidden">
           {L.boardSlices(tasks).map(x =>
-            x.status === 'doing' ? (
-              // the running stretch shimmers: a lit part sweeps across it, one step per frame
-              L.shimmerMask(SHIMMER, frame, isStill).map((lit, i) => (
-                <Box key={`slice-${x.card}-${i}`} flexGrow={1} height={1} backgroundColor={lit ? L.cardColor(x.card) : L.shade(L.cardColor(x.card), 0.45)} />
-              ))
-            ) : (
-              // a todo stretch has no fill: the track shows through as work still to do
-              <Box key={`slice-${x.card}`} flexGrow={SHIMMER} height={1} backgroundColor={inkOf(x.card, x.status)} />
-            ),
+            x.status === 'doing'
+              ? // the running stretch shimmers: a lit part sweeps across it, one step per frame
+                L.shimmerMask(SHIMMER, frame, isStill).map((lit, i) => run(`slice-${x.card}-${i}`, lit ? '▓' : '░', { flexGrow: 1 }, inkOf(x.card, x.status), !lit))
+              : run(`slice-${x.card}`, x.status === 'todo' ? '░' : '█', { flexGrow: SHIMMER }, inkOf(x.card, x.status), x.status === 'todo'),
           )}
         </Box>
         <Box flexShrink={0}>
@@ -1537,7 +1534,8 @@ export const register: Register = (on, options) => {
       ? 'no turn yet'
       : `${isColdNow ? 'cold' : 'warm'}, idle ${idleMin}m${warmLeft ? `, keep-warm ${warmLeft}m left` : ', keep-warm off'}`
     // the context bar split by where the tokens come from (the engine's own /context breakdown), biggest first
-    const segs = L.ctxSegments(limits.parts ?? [], limits.ctxWindow).sort((x, y) => y.tokens - x.tokens)
+    // shown only when asked for (contextBreakdown): by default the Context row is one plain meter
+    const segs = opt('contextBreakdown', 0) > 0 ? L.ctxSegments(limits.parts ?? [], limits.ctxWindow).sort((x, y) => y.tokens - x.tokens) : []
     const ctxBar = segs.length ? (
       <Box key="meter-Context" gap={1}>
         {label('Context')}
@@ -1589,7 +1587,7 @@ export const register: Register = (on, options) => {
 
     // ---------------- models
     const shown = L.shares(usage)
-    const modelColor: Record<string, string> = { Haiku: 'green', Sonnet: 'cyan', Opus: 'magenta', Other: 'gray' }
+    const modelColor: Record<string, string> = { Haiku: 'green', Sonnet: 'cyan', Opus: 'magenta', Fable: 'yellow', Other: 'gray' }
     const modelsWin = win(
       '◉',
       'MODELS TODAY',
