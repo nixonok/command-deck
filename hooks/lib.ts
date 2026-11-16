@@ -444,18 +444,22 @@ export function isWorthAttaching(plan: Plan): boolean {
  * The plan the model reads with the message: steps, how to run them, the step-specific engineering rules and the final
  * pass. The Unity C# rules ride only in a Unity project and only when a step writes C# (an unknown answer keeps them).
  */
-export function planContext(plan: Plan, opts: { unity?: boolean; added?: { title: string; tier: Tier; parallel: boolean }[] } = {}): string {
+export function planContext(plan: Plan, opts: { unity?: boolean; unityVersion?: string; first?: { title: string; tier: Tier; parallel: boolean }[]; added?: { title: string; tier: Tier; parallel: boolean }[] } = {}): string {
   const added = opts.added ?? []
-  const steps = [...plan.tasks, ...added].map(
-    (t, i) => `${i + 1}. [${TIER_LABEL[t.tier]}${t.parallel ? ' ∥' : ''}] ${t.title}`,
-  )
+  const first = opts.first ?? []
+  // a step that comes before the plan's own is numbered 0, so the plan's step numbers (the rules below name them) hold
+  const steps = [
+    ...first.map(t => `0. [${TIER_LABEL[t.tier]}] ${t.title}`),
+    ...[...plan.tasks, ...added].map((t, i) => `${i + 1}. [${TIER_LABEL[t.tier]}${t.parallel ? ' ∥' : ''}] ${t.title}`),
+  ]
   return [
     'Command Deck plan for this message (the person did not type this; follow it unless it is wrong):',
     `Brief: ${plan.prompt}`,
     'Steps:',
     ...steps,
     'How to run it: do Sonnet and Opus steps yourself. Each [Haiku] step goes to its own subagent with model "haiku", given only its title, the exact spot to change and its done condition, no project history. Start the ∥ Haiku steps together only when they edit different files; steps on one file run in order. Read-heavy search goes to an Explore subagent; long builds and tests run in the background. Check each subagent edit before the next step. Report which steps ran on Haiku, which ran in parallel and any failure. Board: give each subagent its step title word for word as its description; log your own steps with TodoWrite (or TaskCreate/TaskUpdate) under the same titles, or, without those tools, end the reply with `Done: <step title>` for each step verified and `Skip: <step title>` for each step dropped on purpose.',
-    ...(opts.unity && plan.csharp !== false ? [unityRules(plan.tasks.map(t => `${t.title} ${t.why}`).join(' '))] : []),
+    ...(opts.unity && plan.csharp !== false ? [unityRules(plan.tasks.map(t => `${t.title} ${t.why}`).join(' '), opts.unityVersion)] : []),
+    ...(first.some(t => t.title === PLAN_REVIEW_TITLE) ? [PLAN_REVIEW_HOW] : []),
     ...(added.some(t => t.title === REVIEW_TITLE) ? [REVIEW_HOW] : []),
     ...[guidelineExtras(plan)].filter(Boolean),
     ...(plan.tasks.length > 1 ? [finalPass(plan)] : []),
@@ -867,6 +871,28 @@ export function withReviewTask<T extends Step>(tasks: T[], plan: Pick<Plan, 'cod
   return [...tasks, { title: REVIEW_TITLE, tier: 'sonnet', why: 'Catch bugs before the smoke test', parallel: false }]
 }
 
+// ------------------------------------------------------------ plan review
+// A wrong plan costs every step built on it, so a risky plan is read once before any code is written. The reviewer
+// gets the brief and the steps only: it judges the plan, it does not start the work.
+export const PLAN_REVIEW_TITLE = 'Plan review: subagent reads the plan before any code'
+export const PLAN_REVIEW_HOW = `How to run "${PLAN_REVIEW_TITLE}": before step 1, start one subagent with model "sonnet" that gets no history, only the brief and the step list above. Ask it, as a staff engineer, for at most 5 points: a wrong assumption, a missing step, a simpler route, a step that can break something. It may read the files the plan names and nothing else, and it writes no code. Change the plan where it is right, and say in one line what you changed and what you rejected.`
+
+/** The step a risky plan starts with, or none: a small plan, a plan with no code, and one that already has a plan review are left alone. */
+export function planReviewSteps(plan: Pick<Plan, 'code' | 'tasks'>, isOn = true): Step[] {
+  if (!isOn || !isRiskyPlan(plan) || plan.tasks.some(t => /plan review/i.test(t.title))) return []
+  return [{ title: PLAN_REVIEW_TITLE, tier: 'sonnet', why: 'Catch a wrong plan early', parallel: false }]
+}
+
+/**
+ * What "done" means in a brief ("Done when: ...", "Definition of done: ..."), as one line; '' when the brief names
+ * none. The line ends at the next "Label:" or blank line, and one too short to be a condition is not a goal.
+ */
+export function doneWhen(brief: string): string {
+  const m = /(?:^|[\s.;])(?:[Dd]one when|[Dd]efinition of done)\s*[:=]\s*([\s\S]+?)(?=\s+[A-Z][A-Za-z ]{0,24}:\s|\n\s*\n|$)/.exec(brief)
+  const text = (m?.[1] ?? '').replace(/\s+/g, ' ').trim()
+  return text.length >= 12 && text.includes(' ') ? clip(text, 400) : ''
+}
+
 // ------------------------------------------------------------ verify gate
 // After a turn that changed files the deck runs the project's own check in the background. A pass costs no tokens; a
 // failure goes back to the model with the end of the output. The command is the person's: read from
@@ -908,6 +934,28 @@ export function unityCompile(text: unknown): { isCompiling: boolean; errors: str
   const entries = Array.isArray(d?.entries) ? d.entries : []
   return { isCompiling: d?.isCompiling === true, errors: entries.length ? entries.map(x => (typeof x === 'string' ? x : JSON.stringify(x))).join('\n') : '' }
 }
+// the compile gate asks for the compile itself: an editor in the background has not looked at the changed files yet
+export const UNITY_MENU_TOOL = 'mcp__unity__unity_execute_menu_item'
+export const UNITY_REFRESH_MENU = 'Assets/Refresh'
+/** True when the editor's own answer says it is compiling; an answer that cannot be read is not. */
+export const unityIsCompiling = (text: unknown): boolean => dataOf(text)?.isCompiling === true
+/** True when the Unity MCP's answer says the call it was given worked. */
+export const unityOk = (text: unknown): boolean => {
+  try {
+    return (JSON.parse(String(text)) as { success?: unknown }).success === true
+  } catch {
+    return false
+  }
+}
+export type UnityLook = { state: 'idle' | 'compiling' | 'playing'; version: string; scene: string }
+/** What the pane shows of the editor, from its own state answer; null when the answer cannot be read. */
+export function unityLook(text: unknown): UnityLook | null {
+  const d = dataOf(text)
+  if (!d) return null
+  return { state: d.isPlaying === true ? 'playing' : d.isCompiling === true ? 'compiling' : 'idle', version: String(d.unityVersion ?? ''), scene: String(d.activeScene ?? '') }
+}
+/** The editor version a project is made with, from its ProjectSettings/ProjectVersion.txt ('' when it names none). */
+export const unityVersionOf = (file: string): string => /m_EditorVersion:\s*(\S+)/.exec(file)?.[1] ?? ''
 export const UNITY_PLAY_DENY = 'Unity is in Play mode. A C# edit now recompiles under the running game and can hang the editor. Ask the person to stop Play (or stop it yourself if they already agreed), then make this edit again.'
 
 // ------------------------------------------------------------ guards
@@ -939,6 +987,45 @@ export function guardFor(guards: Guard[], command: unknown): Guard | undefined {
   })
 }
 export const guardDeny = (g: Guard): string => `Blocked by this project's guard (.claude/deck/guards.md): ${g.reason}`
+
+// ------------------------------------------------------------ corrections
+// A message that corrects the model may hold a lasting rule. The words only hint at it: nothing is kept until the
+// person presses Save in the pane, and what is kept is theirs to edit (.claude/deck/conventions.md).
+const CORRECTION_START = /^(no\b|nope\b|wrong\b|not (like )?(that|this)\b|don'?t\b|do not\b|never\b|always\b|stop\b|i (said|told you|asked)\b|that'?s (not|wrong)\b|you (forgot|missed|ignored|broke|should(n'?t)?|must)\b|why did you\b)/i
+const CORRECTION_ANY = /\b(from now on|next time|in future|not what i asked|i (already )?(said|told you)|as i said)\b/i
+/** True when a typed message reads like a correction: short, not a command, and worded as one. A hint, never proof. */
+export function isCorrection(text: string): boolean {
+  const t = text.trim()
+  if (t.length < 12 || t.length > 400 || t.startsWith('/')) return false
+  return CORRECTION_START.test(t) || CORRECTION_ANY.test(t)
+}
+export const RULE_SYSTEM = `You turn a developer's correction of an AI coding assistant into one lasting project rule. Reply with the rule only: one line, under 25 words, an instruction that holds next time too, in plain words, with every file name, tool name and number kept exact. No "this time", no quotes, no bullet. If the correction is a one-off with nothing to keep, reply with the single word NONE.`
+export const rulePrompt = (correction: string, before: string): string => `What the assistant last said (end of it):\n${before.slice(-500) || '(nothing)'}\n\nThe correction:\n${correction}`
+/** The rule to keep: the model's one line, or the person's own words when it gave none. */
+export function parseRule(raw: unknown, own: string): string {
+  const line = String(raw ?? '').split('\n').map(l => l.replace(/^[\s>*-]+/, '').replace(/^["'`]+|["'`]+$/g, '').trim()).find(Boolean) ?? ''
+  return clip((/^none\b/i.test(line) || line.length < 8 ? own : line).replace(/\s+/g, ' ').trim(), 240)
+}
+/** The conventions file with the rule added as a bullet; a rule it already holds leaves it as it was. */
+export function addRule(file: string, rule: string): string {
+  const text = rule.replace(/\s+/g, ' ').trim()
+  if (!text || file.toLowerCase().includes(text.toLowerCase())) return file
+  return `${file.trim() ? `${file.trimEnd()}\n` : ''}- ${text}\n`
+}
+
+// ------------------------------------------------------------ dead weight
+// A skill's listing and a server's loaded tools are paid for in every chat, used or not. The deck notes when each was
+// last called in this project and shows the ones that were not, dearest first: a hint about what to turn off.
+export type Weight = { name: string; kind: 'skill' | 'mcp'; tokens: number }
+/** The name a use is filed under. A skill is called with or without its plugin's prefix ("ponytail:ponytail-audit", "ponytail-audit"), so only its own name counts; a server's whole name does. */
+export const useKey = (kind: Weight['kind'], name: unknown): string => `${kind}:${norm(kind === 'skill' ? (String(name ?? '').split(':').pop() ?? '') : String(name ?? ''))}`
+/** The listed items not called within `days`, dearest first. Items under `min` tokens are not worth a line. */
+export function deadWeight(items: Weight[], lastUse: Record<string, number>, now: number, days: number, min = 30): Weight[] {
+  const since = now - days * 86_400_000
+  return items
+    .filter(x => x.tokens >= min && (lastUse[useKey(x.kind, x.name)] ?? 0) < since)
+    .sort((a, b) => b.tokens - a.tokens)
+}
 
 // ------------------------------------------------------------ stuck detector
 export const STUCK_AFTER = 3

@@ -30,7 +30,7 @@ const answeredA = atom({ plugin: 'command-deck', key: 'answered' } as const, fal
 const histA = atom({ plugin: 'command-deck', key: 'history' } as const, [] as Hist[])
 const orderA = atom({ plugin: 'command-deck', key: 'order' } as const, null as string[] | null)
 // Git and History start minimized; the person can open them and the choice is kept
-const minA = atom({ plugin: 'command-deck', key: 'min' } as const, { GIT: true, HISTORY: true } as Record<string, boolean>)
+const minA = atom({ plugin: 'command-deck', key: 'min' } as const, { GIT: true, HISTORY: true, 'DEAD WEIGHT': true } as Record<string, boolean>)
 // History shows the newest 15 entries; true shows every stored entry
 // arrange mode shows the move buttons on every section; off, a section header holds only its fold button
 const arrangeA = atom({ plugin: 'command-deck', key: 'arrange' } as const, false)
@@ -41,6 +41,16 @@ type Verify = { state: 'idle' | 'ask' | 'running' | 'pass' | 'fail'; command: st
 const verifyA = atom({ plugin: 'command-deck', key: 'verify' } as const, { state: 'idle', command: '' } as Verify)
 // what each effort level cost today (turns, output tokens, turns that ran long)
 const effortStatsA = atom({ plugin: 'command-deck', key: 'effortStats' } as const, {} as Record<string, L.EffortStat>)
+// a typed message that reads like a correction, waiting for the person's answer; `rule` is the drafted text once
+// they pressed Save, shown before anything is kept
+type Hint = { text: string; before: string; dir: string; rule?: string }
+const hintA = atom({ plugin: 'command-deck', key: 'hint' } as const, null as Hint | null)
+// the Unity editor as last seen: only events the deck already has (an edit's Play check, the compile gate, a press)
+type UnityView = { state: L.UnityLook['state'] | 'no answer' | ''; version: string; scene: string; compile: 'clean' | 'errors' | 'not proven' | ''; errors: string; at: number }
+const NO_UNITY: UnityView = { state: '', version: '', scene: '', compile: '', errors: '', at: 0 }
+const unityA = atom({ plugin: 'command-deck', key: 'unity' } as const, NO_UNITY)
+// when each skill and MCP server was last called in this project (name -> time), for the dead-weight section
+const lastUseA = atom({ plugin: 'command-deck', key: 'lastUse' } as const, {} as Record<string, number>)
 const LEARN = 'command-deck-learn'
 const CHOICES = ['Yes', 'No', 'Not sure']
 let fromPanel = false
@@ -94,6 +104,8 @@ let verifyNote = ''
 // Unity MCP: calls that got no answer in a row (three and the deck stops asking); when Play was last seen off
 let unityMisses = 0
 let playClearAt = 0
+// the editor version the project is made with, read once at session start ('' outside Unity)
+let unityVersion = ''
 // rules already given, by agent and file type, so each is paid for once
 const rulesSent = new Set<string>()
 // stuck detector: the last failure of each agent and how often it repeated
@@ -187,7 +199,8 @@ async function answerVerify($: any, shown: string, isYes: boolean) {
 // A call to the Unity MCP that cannot hang a hook: an editor that does not answer in time counts as a miss. Three
 // misses in a row and the deck stops asking for this chat (no Unity MCP here); any answer starts the count again, so
 // one dropped call while Unity reloads its scripts turns nothing off.
-async function askUnity($: any, input: Record<string, unknown>, waitMs: number): Promise<string | null> {
+// `isCounted` false is for a call made while the editor may be reloading its scripts: silence then is expected.
+async function askUnity($: any, input: Record<string, unknown>, waitMs: number, isCounted = true): Promise<string | null> {
   if (unityMisses >= 3) return null
   try {
     const r = (await Promise.race([$.tool.call(input), $.clock.sleep(waitMs).then(() => null)])) as { deny?: unknown; text?: string } | null
@@ -195,23 +208,49 @@ async function askUnity($: any, input: Record<string, unknown>, waitMs: number):
     unityMisses = 0
     return r.text
   } catch {
-    unityMisses += 1
+    if (isCounted) unityMisses += 1
     return null
   }
 }
 
-// Unity's own compiler, asked through the Unity MCP. A compile still running is waited for with a growing pause, a few
-// times; an editor that cannot be asked is no failure.
+/** Asks the editor how it is and keeps the answer for the pane. Null when it did not answer. */
+async function lookUnity($: any, isCounted = true): Promise<string | null> {
+  const text = await askUnity($, { tool: L.UNITY_STATE_TOOL }, 4000, isCounted)
+  const look = L.unityLook(text)
+  const at = await $.clock.now()
+  await update($, unityA, (u: UnityView) => (look ? { ...u, ...look, version: look.version || u.version, at } : { ...u, state: 'no answer' as const, at }))
+  return text
+}
+
+// Unity's own compiler, asked through the Unity MCP.
+// Contract: the deck asks for the compile itself (an editor in the background has not looked at the changed files),
+// waits until the editor is idle, then reads the errors. Invariants: 'clean' is said only for a compile the deck asked
+// for and saw end (idle twice in a row, since one idle answer may come before the compile began); errors the editor
+// lists are reported whether or not the refresh was answered; nothing is refreshed or read while the editor plays (it
+// would recompile under the running game); an editor that cannot be asked, or never goes idle, is 'unknown', never a
+// pass.
 async function unityCompile($: any): Promise<{ what: string; output: string } | 'clean' | 'unknown'> {
-  for (let wait = 2000; wait <= 8000; wait += 2000) {
-    const text = await askUnity($, { tool: L.UNITY_ERRORS_TOOL, severity: 'error', count: 20 }, 8000)
-    if (text === null) return 'unknown'
-    const c = L.unityCompile(text)
-    if (c.errors) return { what: 'Unity compile errors', output: c.errors }
-    if (!c.isCompiling) return 'clean'
+  const state = await lookUnity($)
+  if (state === null || L.unityIsPlaying(state)) return 'unknown'
+  // proof that a compile ran: the refresh was answered, or its answer was lost to the script reload it started and
+  // the editor was then seen compiling
+  let isAsked = L.unityOk(await askUnity($, { tool: L.UNITY_MENU_TOOL, menuPath: L.UNITY_REFRESH_MENU }, 30_000, false))
+  // the compile starts a moment after the refresh answers, and a script reload drops calls: silence is not "idle"
+  // one idle answer may come before the compile began, so two in a row are needed
+  let idle = 0
+  for (let wait = 1000; wait <= 10_000 && idle < 2; wait += 1000) {
     await $.clock.sleep(wait).catch(() => undefined)
+    const now = await lookUnity($, false)
+    if (L.unityIsPlaying(now)) return 'unknown'
+    if (L.unityIsCompiling(now)) isAsked = true
+    idle = now !== null && !L.unityIsCompiling(now) ? idle + 1 : 0
   }
-  return 'unknown'
+  if (idle < 2) return 'unknown'
+  const text = await askUnity($, { tool: L.UNITY_ERRORS_TOOL, severity: 'error', count: 20 }, 8000)
+  if (text === null) return 'unknown'
+  const c = L.unityCompile(text)
+  if (c.errors) return { what: 'Unity compile errors', output: c.errors }
+  return isAsked && !c.isCompiling ? 'clean' : 'unknown'
 }
 
 async function runVerify($: any, isForced = false) {
@@ -227,6 +266,10 @@ async function runVerify($: any, isForced = false) {
       const wasCs = csEditedTurn
       csEditedTurn = false
       const compiled = isUnity && wasCs ? await unityCompile($) : 'unknown'
+      if (isUnity && wasCs) {
+        const at = await $.clock.now()
+        await update($, unityA, (u: UnityView) => ({ ...u, compile: typeof compiled === 'object' ? ('errors' as const) : compiled === 'clean' ? ('clean' as const) : ('not proven' as const), errors: typeof compiled === 'object' ? compiled.output : '', at }))
+      }
       let failure: { what: string; exitCode?: number; output: string } | null = typeof compiled === 'object' ? compiled : null
       const v = await verifyFor($)
       let isChecked = compiled !== 'unknown'
@@ -249,7 +292,11 @@ async function runVerify($: any, isForced = false) {
       }
       if (failure) await verifyFailed($, failure)
       else if (isChecked) await verifyPassed($, v.isAllowed ? v.command : 'Unity compile')
-      else if (isForced && !v.command) $.ui.toast('No verify command yet: /command-deck verify <command> sets one.')
+      else {
+        if (isForced && !v.command && !(isUnity && wasCs)) $.ui.toast('No verify command yet: /command-deck verify <command> sets one.')
+        // a compile that could not be proven must not sit under the last check's tick
+        if (isUnity && wasCs) await update($, verifyA, (was: Verify) => (was.state === 'pass' ? { state: 'idle' as const, command: '' } : was))
+      }
     } while (verifyAgain)
   } finally {
     isVerifying = false
@@ -287,6 +334,81 @@ async function verifyFailed($: any, f: { what: string; exitCode?: number; output
   }
 }
 
+// ------------------------------------------------------------ dead weight, corrections, goal
+// a use is written once per name per chat: the store is touched a few times a session, not on every call
+// Writes go one at a time (each reads the store fresh, so none drops another's key) and under the project the call
+// was made in, even if the session has moved on by the time the write runs.
+const usedNow = new Set<string>()
+let useWrites: Promise<void> = Promise.resolve()
+function markUse($: any, key: string): Promise<void> {
+  if (usedNow.has(key)) return useWrites
+  usedNow.add(key)
+  const dir = DIR
+  useWrites = useWrites.then(async () => {
+    try {
+      const at = await $.clock.now()
+      const uses = ((await $.store.get('deck.lastUse')) as Record<string, Record<string, number>> | undefined) ?? {}
+      await $.store.set('deck.lastUse', { ...uses, [dir]: { ...uses[dir], [key]: at } })
+      if (dir === DIR) await update($, lastUseA, (m: Record<string, number>) => ({ ...m, [key]: at }))
+    } catch {
+      // the section is a hint: a lost mark is tried again on the next call
+      usedNow.delete(key)
+    }
+  })
+  return useWrites
+}
+
+// Contract: a correction becomes a rule in two presses. The first drafts the rule and shows it; the second keeps
+// exactly the text shown. Invariants: nothing is written that the person did not see; one bullet per rule (a repeat
+// adds nothing); a model that fails or finds no rule shows the person's own words instead; the hint is gone after
+// Keep or No, so a further press does nothing; the file is the one of the project the hint was raised in.
+async function draftRule($: any, shown: string) {
+  const hint = await read($, hintA)
+  if (!hint || hint.rule || hint.text !== shown) return
+  let raw = ''
+  try {
+    const r = await $.model.complete({ model: 'haiku', system: L.RULE_SYSTEM, prompt: L.rulePrompt(hint.text, hint.before), maxTokens: 120, timeoutMs: 20_000 })
+    if (r.isAnswered) {
+      await addUsage($, 'haiku', { ...r.usage, model: 'haiku' })
+      raw = String(r.text ?? '')
+    }
+  } catch {
+    /* the person's own words are offered instead */
+  }
+  const rule = L.parseRule(raw, hint.text)
+  // a newer correction, or a No, came in while the rule was written: this draft is dropped
+  await update($, hintA, (h: Hint | null) => (h && h.text === shown && !h.rule ? { ...h, rule } : h))
+}
+
+async function keepRule($: any, shown: string) {
+  const hint = await read($, hintA)
+  if (!hint || !hint.rule || hint.rule !== shown) return
+  await update($, hintA, () => null)
+  const path = `${hint.dir}/conventions.md`
+  try {
+    const before = await readFile($, path)
+    const after = L.addRule(before, hint.rule)
+    if (after === before) {
+      $.ui.toast('That rule is already kept.')
+      return
+    }
+    await $.fs.write(path, after)
+    $.ui.toast('Rule kept for new chats (.claude/deck/conventions.md).')
+  } catch (err) {
+    $.ui.toast(`Could not save the rule: ${String((err as Error)?.message ?? err)}`)
+  }
+}
+
+/** Hands the brief's "done when" to Claude Code's own /goal, which keeps the work going until it holds. */
+async function runGoal($: any, done: string) {
+  try {
+    await $.command.run({ command: 'goal', args: done })
+    $.ui.toast('Goal set from the brief: Claude keeps working until it holds.')
+  } catch (err) {
+    $.ui.toast(`Could not set the goal (needs Claude Code with /goal): ${String((err as Error)?.message ?? err)}`)
+  }
+}
+
 async function openHistoryFolder($: any) {
   try {
     if (!(await $.fs.exists(histFile()))) await $.fs.write(histFile(), '# Command Deck history\n')
@@ -319,7 +441,7 @@ async function save($: any) {
   }
 }
 
-const DEFAULT_ORDER = ['BOARD', 'BRIEF', 'USAGE', 'MODELS', 'SAVED', 'GIT', 'TIPS', 'HISTORY']
+const DEFAULT_ORDER = ['BOARD', 'BRIEF', 'UNITY', 'USAGE', 'MODELS', 'SAVED', 'WEIGHT', 'GIT', 'TIPS', 'HISTORY']
 
 // the saved order, healed: unknown ids dropped, new ids appended, so an old layout never hides a section
 function fullOrder(saved: string[] | null): string[] {
@@ -355,6 +477,22 @@ async function load($: any) {
   lastStep = {}
   isCavemanOff = false
   isUnity = await $.fs.exists(`${rootDir()}ProjectSettings/ProjectVersion.txt`).catch(() => false)
+  unityVersion = isUnity ? L.unityVersionOf(await readFile($, `${rootDir()}ProjectSettings/ProjectVersion.txt`)) : ''
+  await update($, unityA, () => ({ ...NO_UNITY, version: unityVersion }))
+  await update($, hintA, () => null)
+  usedNow.clear()
+  const uses = ((await $.store.get('deck.lastUse').catch(() => undefined)) as Record<string, Record<string, number>> | undefined) ?? {}
+  // the first chat here starts the watch: an item is "not called" only since then
+  const mine = { ...uses[DIR], _since: uses[DIR]?._since ?? (await $.clock.now()) }
+  // queued behind any use still being written, so neither write drops the other
+  if (!uses[DIR]?._since) {
+    const dir = DIR
+    useWrites = useWrites.then(async () => {
+      const now = ((await $.store.get('deck.lastUse').catch(() => undefined)) as Record<string, Record<string, number>> | undefined) ?? {}
+      await $.store.set('deck.lastUse', { ...now, [dir]: { ...now[dir], _since: mine._since } }).catch(() => undefined)
+    })
+  }
+  await update($, lastUseA, () => mine)
   guards = L.parseGuards(await readFile($, `${DIR}/guards.md`))
   projectNotes = L.projectSection(await readFile($, memoryFile()), await readFile($, `${DIR}/conventions.md`))
   rulesSent.clear()
@@ -433,6 +571,7 @@ async function applyUsage($: any, u: any) {
   let servers: CtxServer[] | undefined = prev.servers
   let skillTokens: number | undefined = prev.skillTokens
   let skills: string[] | undefined = prev.skills
+  let skillCosts = prev.skillCosts
   if (bd) {
     parts = (bd.categories ?? []).map((c: any) => ({ name: String(c.name), tokens: Number(c.tokens) || 0, kind: c.kind }))
     const by = new Map<string, CtxServer>()
@@ -445,12 +584,14 @@ async function applyUsage($: any, u: any) {
     servers = [...by.values()].sort((a, b) => b.tokens - a.tokens)
     skillTokens = bd.skills?.tokens
     skills = L.skillNames(bd.skills?.skillFrontmatter)
+    skillCosts = (bd.skills?.skillFrontmatter ?? []).map((x: any) => ({ name: String(x.name), tokens: Number(x.tokens) || 0 }))
   }
   await update($, limitsA, () => ({
     parts,
     servers,
     skillTokens,
     skills,
+    skillCosts,
     fiveHour: five ? { pct: five.percentUsed, resetsAt: five.resetsAt } : undefined,
     sevenDay: week ? { pct: week.percentUsed, resetsAt: week.resetsAt } : undefined,
     ctxTokens: ctx.tokens,
@@ -1003,7 +1144,8 @@ async function autoPlan($: any, e: any): Promise<string | 'drop' | null> {
     return pending ? `Answers to the earlier questions are in this message. Original request: ${pending.ask}` : null
   }
   const steps = planSteps(plan)
-  const tasks: Task[] = steps.map((t, i) => ({ id: i + 1, title: t.title, tier: t.tier, why: t.why, parallel: t.parallel, status: 'todo', tokens: 0 }))
+  const first = L.planReviewSteps(plan, opt('planReview', 1) > 0)
+  const tasks: Task[] = [...first, ...steps].map((t, i) => ({ id: i + 1, title: t.title, tier: t.tier, why: t.why, parallel: t.parallel, status: 'todo', tokens: 0 }))
   await archive($)
   await update($, tasksA, () => tasks)
   await update($, goalA, () => plan.prompt)
@@ -1024,7 +1166,7 @@ async function autoPlan($: any, e: any): Promise<string | 'drop' | null> {
   }
   // Unity projects only, and only when a step writes C# (planContext checks that); the main chat then has the rules
   if (isUnity && plan.csharp !== false) rulesSent.add('main|unity')
-  return L.planContext(plan, { unity: isUnity, added: steps.slice(plan.tasks.length) }) + extra
+  return L.planContext(plan, { unity: isUnity, unityVersion, first, added: steps.slice(plan.tasks.length) }) + extra
 }
 
 // Learn more: a pane of its own with an explanation written for the tip. The text lives in session state only:
@@ -1268,6 +1410,10 @@ export const register: Register = (on, options) => {
       verifySends = 0
       if (verifyNote) added.push(verifyNote)
       verifyNote = ''
+      // a correction may hold a rule worth keeping: the pane offers it, the person decides
+      // (the offer is for the newest message only, so an older one leaves with this message)
+      const hint = opt('learnRules', 1) > 0 && L.isCorrection(e.text) ? { text: L.clip(e.text.trim(), 400), before: lastAnswer.slice(-500), dir: DIR } : null
+      await update($, hintA, () => hint).catch(() => undefined)
     }
     // every typed message carries the caveman line: beside the newest message it holds where the system prompt fades
     if (!isCavemanOff && opt('caveman', 1) > 0 && HUMAN.has(String(e.origin?.kind)) && !e.text.startsWith('/')) added.push(L.CAVEMAN_REMINDER)
@@ -1326,7 +1472,7 @@ export const register: Register = (on, options) => {
     const brief = `${String(e.description ?? '')} ${String(e.prompt ?? '')}`
     // a subagent that will touch C# gets the Unity rules in its own prompt: before it writes, and at no cost in output
     // (an agent that only reads writes no code, so it gets none)
-    const unity = isPlain && !isReader && isUnity && /\.cs\b|\bC#|\bcsharp\b|MonoBehaviour/i.test(brief) ? `\n\n${G.unityRules(brief)}` : ''
+    const unity = isPlain && !isReader && isUnity && /\.cs\b|\bC#|\bcsharp\b|MonoBehaviour/i.test(brief) ? `\n\n${G.unityRules(brief, unityVersion)}` : ''
     const suffix = isPlain && opt('briefReports', 1) > 0 ? L.BRIEF_SUFFIX : ''
     const input = { ...e, ...(wantsHaiku ? { model: 'haiku' } : {}), ...(unity || suffix ? { prompt: `${e.prompt}${unity}${suffix}` } : {}) }
     const res = (await next(input)) as { model?: string; agentId?: string; deny?: unknown }
@@ -1349,6 +1495,23 @@ export const register: Register = (on, options) => {
     return res as never
   })
 
+  // a skill run from a slash command never passes the Skill tool: this is where both kinds are seen
+  on('skill.prompt', async ($, e, next) => {
+    void markUse($, L.useKey('skill', e.skill))
+    return next(e)
+  })
+
+  // Compaction: the summary is told what to keep when nobody said, and what the deck gave the main chat once (the
+  // rules for a file type) is given again on the next edit, because a summary does not carry rules word for word.
+  on('session.compact', async ($, e, next) => {
+    if (e.agentId) return next(e)
+    const board = (await read($, tasksA)).filter(t => t.status === 'todo' || t.status === 'doing').map(t => t.title).join('; ')
+    const keep = `Keep word for word: the goal, every rule and correction the person gave, decisions already made, and the open tasks${board ? ` (${board})` : ''}.`
+    const out = await next(e.instructions ? e : { ...e, instructions: keep })
+    if (!out.skip && e.trigger !== 'precompute') for (const key of [...rulesSent]) if (key.startsWith('main|')) rulesSent.delete(key)
+    return out
+  })
+
   // ------------------------------------------------------------ measuring
   on('session.measure', async ($, e, next) => {
     await applyUsage($, e)
@@ -1365,7 +1528,7 @@ export const register: Register = (on, options) => {
   on('tool.call', async ($, e, next) => {
     const tool = String(e.tool)
     // a tool's arguments sit on the event beside `tool` (e.command for Bash), not under an `input` key
-    const args = e as unknown as { todos?: unknown; subject?: unknown; taskId?: unknown; status?: unknown; command?: unknown; file_path?: unknown; notebook_path?: unknown }
+    const args = e as unknown as { todos?: unknown; subject?: unknown; taskId?: unknown; status?: unknown; command?: unknown; file_path?: unknown; notebook_path?: unknown; skill?: unknown }
     const agent = String((e as { agentId?: string }).agentId ?? 'main')
     const path = String(args.file_path ?? args.notebook_path ?? '')
     const ext = L.isFileEdit(tool) ? L.extOf(path) : ''
@@ -1379,7 +1542,7 @@ export const register: Register = (on, options) => {
       const now = await $.clock.now()
       if (now - playClearAt > 15_000) {
         // an editor that does not answer in time is not held to be playing: the edit goes through
-        const state = await askUnity($, { tool: L.UNITY_STATE_TOOL }, 4000)
+        const state = await lookUnity($)
         if (state !== null && L.unityIsPlaying(state)) return { deny: L.UNITY_PLAY_DENY } as never
         if (state !== null) playClearAt = now
       }
@@ -1422,7 +1585,9 @@ export const register: Register = (on, options) => {
     if (srv) {
       usedServers.add(L.norm(srv))
       deferServers.delete(L.norm(srv))
+      void markUse($, L.useKey('mcp', srv))
     }
+    if (tool === 'Skill') void markUse($, L.useKey('skill', args.skill))
     const res = await next(e)
     if (created) {
       // Claude Code numbers its tasks 1, 2, 3 in creation order, and says so in the result
@@ -1457,7 +1622,7 @@ export const register: Register = (on, options) => {
         if (!rulesSent.has(`${agent}|${ext}`)) {
           rulesSent.add(`${agent}|${ext}`)
           const own = L.clip((await readFile($, `${DIR}/rules-${ext}.md`)).trim(), 3000)
-          const unity = ext === 'cs' && isUnity && !rulesSent.has(`${agent}|unity`) ? G.unityRules(path) : ''
+          const unity = ext === 'cs' && isUnity && !rulesSent.has(`${agent}|unity`) ? G.unityRules(path, unityVersion) : ''
           if (unity) rulesSent.add(`${agent}|unity`)
           const rules = [unity, own].filter(Boolean).join('\n')
           if (rules) notes.push(`Rules for .${ext} files in this project (given once; check the edit you just made against them and fix what breaks one):\n${rules}`)
@@ -1589,7 +1754,7 @@ export const register: Register = (on, options) => {
   // pane holds at any width and in a proportional font, where a row of block characters did not.
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Text, Button } = $.ui.resolve(e)
-    const [tasks, usage, savings, git, limits, frame, tip, goal, pending, draft, mins, savedOrder, hist, answered, rtk, isArranging, effort, verify, effortStats] = await Promise.all([
+    const [tasks, usage, savings, git, limits, frame, tip, goal, pending, draft, mins, savedOrder, hist, answered, rtk, isArranging, effort, verify, effortStats, hint, unity, lastUse] = await Promise.all([
       read($, tasksA),
       read($, usageA),
       read($, savingsA),
@@ -1609,6 +1774,9 @@ export const register: Register = (on, options) => {
       read($, effortA),
       read($, verifyA),
       read($, effortStatsA),
+      read($, hintA),
+      read($, unityA),
+      read($, lastUseA),
     ])
     const Input = ($.ui.resolve(e) as any).Input as ((p: Record<string, unknown>) => any) | undefined
     const now = await $.clock.now()
@@ -1840,6 +2008,23 @@ export const register: Register = (on, options) => {
             ✖ {verify.command}
             {verify.note ? <Text dimColor>{`  ${verify.note}`}</Text> : null}
           </Text>
+        ) : null}
+        {hint ? (
+          // the words only hint at a rule: nothing is kept until the person says so
+          <Box flexDirection="column">
+            <Text wrap="wrap">
+              {hint.rule ? 'Keep this rule for new chats? ' : 'Keep as a rule for new chats? '}
+              <Text bold color="yellow">{hint.rule ?? L.clip(hint.text, 160)}</Text>
+            </Text>
+            <Box gap={1}>
+              {hint.rule ? (
+                <Button key="rule-keep" label="Keep" onPress={() => void keepRule($, hint.rule ?? '')} />
+              ) : (
+                <Button key="rule-yes" label="Save as rule" onPress={() => void draftRule($, hint.text)} />
+              )}
+              <Button key="rule-no" label="No" onPress={() => void update($, hintA, () => null)} />
+            </Box>
+          </Box>
         ) : null}
       </Box>
     )
@@ -2191,9 +2376,89 @@ export const register: Register = (on, options) => {
                   </Box>
                 )
               })}
+            {L.doneWhen(goal) ? (
+              <Box>
+                <Button key="goal-set" label="⟳ Work until done" onPress={() => void runGoal($, L.doneWhen(goal))} />
+              </Box>
+            ) : null}
           </Box>,
           undefined,
           'BRIEF',
+        )
+      : null
+
+    // ---------------- Unity: the editor as last seen (asked only at an edit, a compile check or a press, never on a timer)
+    const ago = (at: number) => (at ? (now - at < 60_000 ? 'just now' : `${Math.floor((now - at) / 60_000)} min ago`) : '')
+    const unityWin = isUnity
+      ? win(
+          '◈',
+          'UNITY',
+          'blue',
+          <Box flexDirection="column">
+            {field('Editor', [unity.version, unity.state || 'not asked yet', unity.scene].filter(Boolean).join(' · '), unity.state === 'playing' ? 'yellow' : unity.state === 'no answer' ? 'red' : undefined)}
+            {field('Compile', unity.compile ? `${unity.compile === 'clean' ? '✔ clean' : unity.compile === 'errors' ? `✖ ${unity.errors.split('\n').length} errors` : 'not proven (editor busy or silent)'}` : 'not checked in this chat', unity.compile === 'clean' ? 'green' : unity.compile === 'errors' ? 'red' : undefined)}
+            {unity.errors ? (
+              <Text color="red" wrap="wrap">
+                {unity.errors.split('\n').slice(0, 3).map(l => L.clip(l, 200)).join('\n')}
+              </Text>
+            ) : null}
+            <Box gap={1} flexWrap="wrap">
+              <Button key="unity-look" label="↻ Ask editor" onPress={() => void lookUnity($, false)} />
+              <Button
+                key="unity-compile"
+                label="Compile now"
+                onPress={() => {
+                  csEditedTurn = true
+                  void runVerify($, true).catch(() => undefined)
+                }}
+              />
+            </Box>
+          </Box>,
+          ago(unity.at),
+          'UNITY',
+        )
+      : null
+
+    // ---------------- dead weight: what every chat here pays for and nothing called
+    const weightDays = opt('deadWeightDays', 7)
+    const dead = L.deadWeight(
+      [
+        ...(limits.skillCosts ?? []).map(x => ({ name: x.name, kind: 'skill' as const, tokens: x.tokens })),
+        ...(limits.servers ?? []).filter(x => !L.KEEP_SERVERS.includes(L.norm(x.server))).map(x => ({ name: x.server, kind: 'mcp' as const, tokens: x.loaded })),
+      ],
+      lastUse,
+      now,
+      weightDays,
+    )
+    const deadTokens = dead.reduce((sum, x) => sum + x.tokens, 0)
+    const watchedDays = Math.floor((now - (lastUse._since ?? now)) / 86_400_000)
+    const weightWin = dead.length
+      ? win(
+          '⚖',
+          'DEAD WEIGHT',
+          'red',
+          <Box flexDirection="column">
+            {dead.slice(0, 8).map(x => (
+              <Box key={`dead-${x.kind}-${x.name}`} gap={1}>
+                <Box flexGrow={1} flexShrink={1}>
+                  <Text wrap="truncate-end">
+                    {x.name} <Text dimColor>{x.kind}</Text>
+                  </Text>
+                </Box>
+                <Box flexShrink={0}>
+                  <Text bold>{L.compact(x.tokens)}</Text>
+                </Box>
+              </Box>
+            ))}
+            {dead.length > 8 ? <Text dimColor>{`  … ${dead.length - 8} more`}</Text> : null}
+            <Text dimColor wrap="wrap">
+              {watchedDays < weightDays
+                ? `Listed in every chat, not called here since the deck began watching (${watchedDays} d ago). Trust the list after ${weightDays} days.`
+                : `Listed in every chat, not called here in ${weightDays} days. Turn off what this project does not need and every chat starts smaller.`}
+            </Text>
+          </Box>,
+          `${L.compact(deadTokens)} tokens every chat`,
+          'WEIGHT',
         )
       : null
 
@@ -2259,6 +2524,8 @@ export const register: Register = (on, options) => {
       TIPS: tipWin,
       BRIEF: goalWin,
       HISTORY: histWin,
+      UNITY: unityWin,
+      WEIGHT: weightWin,
     }
     for (const id of order) if (parts[id]) visible.push(id)
 

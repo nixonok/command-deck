@@ -129,7 +129,8 @@ export function finalPass(plan: Plan): string {
 }
 
 // Unity C# rules, split so a step pays only for what it touches: a core that always rides, and topic packs picked by
-// plain keywords (no model call). The wording of every rule is the owner's; only the grouping is the deck's.
+// plain keywords (no model call). The wording of the project rules is the owner's; the grouping, and the rules about
+// the editor itself (state, read-back, Play check, version), are the deck's.
 const UNITY_HEAD = 'Unity C# rules (new and edited code only, never decided by asking; the deck hands these to every subagent that edits C#, so do not paste them into subagent prompts):'
 const UNITY_CORE = [
   '- Scene and prefab first: anything an artist may move, size or time (position, gap, angle, arc, duration) is a serialized field or an object in the scene or prefab, with a [Tooltip] and a Scene-view gizmo when spatial. Code reads it and holds no coordinates or layout numbers; it creates no layout objects at runtime unless the same object is also in the scene.',
@@ -139,7 +140,7 @@ const UNITY_CORE = [
   '- Names: serialized mUpperCamel, private _lowerCamel, locals lowerCamel, enum members ALL_UPPER, bools is/can/has, callbacks on...Callback, type suffixes Go/Trans/Cg/Image/Button/Text/Tween. Methods start with a verb. Guard clauses first. No var. One LINQ call per line. Comment only a non-obvious why. Nullable values carry [CanBeNull] (JetBrains.Annotations).',
   '- Hooks block Camera.main, GameObject.Find*, FindObjectOfType and `new GameObject(` in added Minigames C#, and text edits of .meta, .unity and .prefab: change scenes through Unity instead. A line with `allow-deck: <reason>` is skipped.',
   '- Finish clean: delete the fields, objects and disabled leftovers your change replaces. End by saying in plain words what to move or change in the hierarchy to alter the result.',
-  '- Editor state: before the first C# edit read unity_editor_state and never edit a script while the editor is in Play mode; after C# edits read unity_get_compilation_errors and fix every error before calling the step done.',
+  '- Editor state: before the first C# edit read unity_editor_state and never edit a script while the editor is in Play mode; after C# edits ask the editor to compile (unity_execute_menu_item Assets/Refresh), wait until unity_editor_state says isCompiling is false, then read unity_get_compilation_errors and fix every error before calling the step done. An editor in the background has not compiled a file just because it was saved.',
 ]
 export type UnityPack = { id: string; tags: RegExp; rules: string[] }
 export const UNITY_PACKS: UnityPack[] = [
@@ -173,6 +174,7 @@ export const UNITY_PACKS: UnityPack[] = [
     tags: /\b(scenes?|hierarchy|prefabs?|objects?|headers?|dividers?|renam\w*|clean ?up|delet\w*)\b/i,
     rules: [
     '- Hierarchy: group objects under coloured Hierarchy Header dividers (Common/Scripts/Layout/HierarchyHeader), one per section, in every scene; the same section kind has the same colour in every scene (it comes from the header name via HierarchyHeaderPalette; menu Card Adda > Hierarchy > Apply Header Colours To All Scenes). No unused, duplicate or disabled-leftover objects. Name objects by their job, never default or "(N)" names. Delete an object only after proving zero references; list what was deleted.',
+    '- Read back after write: after a scene or prefab value is changed through the Unity MCP, read it again on that same instance, overrides included, and say what it reads now. A prefab edit that an instance overrides changes nothing on screen; a write that answered "success" is not a value that stuck.',
     ],
   },
   {
@@ -180,6 +182,7 @@ export const UNITY_PACKS: UnityPack[] = [
     tags: /\b(games?|minigames?|gameplay|modes?|rules?)\b/i,
     rules: [
     '- Game doc: each game keeps GAMEPLAY_LOOP.md (entry point, loop, seats, where to edit visuals); update it with the change.',
+    '- Play check: a clean compile and passing EditMode tests do not prove gameplay. End with the exact Play check for this change: the scene to start from, the input to give, and what must be seen. Run it yourself only when the person asked for a play test.',
     ],
   },
 ]
@@ -188,6 +191,10 @@ export const UNITY_PACKS: UnityPack[] = [
 export const UNITY_RULES = [UNITY_HEAD, ...UNITY_CORE, ...UNITY_PACKS.flatMap(p => p.rules)].join('\n')
 
 /** The Unity rules for some work, named by its text (step titles, a subagent's prompt, a file path): the core, plus each pack a word of the text calls for. */
-export function unityRules(text: string): string {
-  return [UNITY_HEAD, ...UNITY_CORE, ...UNITY_PACKS.filter(p => p.tags.test(text)).flatMap(p => p.rules)].join('\n')
+export function unityRules(text: string, version = ''): string {
+  return [UNITY_HEAD, ...UNITY_CORE, ...(version ? [unityVersionRule(version)] : []), ...UNITY_PACKS.filter(p => p.tags.test(text)).flatMap(p => p.rules)].join('\n')
 }
+
+/** The line that pins the editor version, so API names come from that version and not from an older one in memory. */
+export const unityVersionRule = (version: string): string =>
+  `- Unity version: this project runs Unity ${version}. Use that version's API names; when a name is in doubt, read the installed package or engine source, never an older name from memory.`

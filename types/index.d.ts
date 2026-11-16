@@ -64,6 +64,8 @@ export type Limits = {
   skillTokens?: number
   /** names of the skills and plugins the chat lists, lowercase, to tell which optional tools are installed */
   skills?: string[]
+  /** each listed skill and what its listing costs in every chat */
+  skillCosts?: { name: string; tokens: number }[]
 }
 
 export type Learn = { tip: string; text: string; isLoading: boolean; isSaved: boolean }
@@ -98,6 +100,9 @@ declare module 'claude-code' {
       effortStats: Record<string, { turns: number; out: number; flailed: number }>
       effort: string
       rtk: { state: 'active' | 'inactive' | 'missing'; saved: number } | null
+      hint: { text: string; before: string; dir: string; rule?: string } | null
+      unity: { state: 'idle' | 'compiling' | 'playing' | 'no answer' | ''; version: string; scene: string; compile: 'clean' | 'errors' | 'not proven' | ''; errors: string; at: number }
+      lastUse: Record<string, number>
     }
   }
 }

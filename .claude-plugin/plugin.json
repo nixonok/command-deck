@@ -1,8 +1,8 @@
 {
   "name": "command-deck",
-  "version": "1.6.1",
+  "version": "1.7.0",
   "icon": "./.claude-plugin/icon.png",
-  "description": "Plan with the right model and effort per task, verify gate, kanban board, usage and git panel, caveman mode, handoff and project memory.",
+  "description": "Plan with the right model and effort per task, verify gate, Unity compile gate, kanban board, usage and git panel, caveman mode, handoff and project memory.",
   "types": "./types/index.d.ts",
   "userConfig": {
     "reducedMotion": {
@@ -52,6 +52,24 @@
       "title": "Fresh-eyes review on risky plans (1 on, 0 off)",
       "description": "A plan that is big, hard or touches something costly to get wrong gets a step where a subagent reads only the diff and hunts bugs.",
       "default": 1
+    },
+    "planReview": {
+      "type": "number",
+      "title": "Plan review on risky plans (1 on, 0 off)",
+      "description": "A plan that is big, hard or touches something costly to get wrong starts with a step where a subagent reads the brief and the steps, before any code is written.",
+      "default": 1
+    },
+    "learnRules": {
+      "type": "number",
+      "title": "Offer to keep corrections as rules (1 on, 0 off)",
+      "description": "When a typed message reads like a correction, the pane offers Save as rule. Nothing is kept unless you press it; saved rules go to .claude/deck/conventions.md and ride in every new chat.",
+      "default": 1
+    },
+    "deadWeightDays": {
+      "type": "number",
+      "title": "Dead weight: days without a call",
+      "description": "Skills and MCP servers listed in every chat but not called in this project for this many days show in the Dead weight section.",
+      "default": 7
     },
     "briefReports": {
       "type": "number",

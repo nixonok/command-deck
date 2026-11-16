@@ -1297,14 +1297,36 @@ test('effort record: turns and mean output per level, and a cheap level that ran
   expect(L.effortLine({})).toBe('')
 })
 
-test('verify gate in Unity: after a C# edit the editor\'s compile errors go back to the model; a compile still running is waited for', async ($, on) => {
+test('verify gate in Unity: the deck asks for the compile, waits until the editor is idle, then reads the errors; clean is said only for a compile it asked for', async ($, on) => {
+  expect([L.unityIsCompiling('{"success":true,"data":{"isCompiling":true}}'), L.unityIsCompiling('junk')]).toEqual([true, false])
+  expect([L.unityOk('{"success":true,"data":{}}'), L.unityOk('{"success":false}'), L.unityOk(null)]).toEqual([true, false, false])
+  expect(L.unityLook('{"success":true,"data":{"isPlaying":false,"isCompiling":true,"unityVersion":"6000.3.28f1","activeScene":"SplashScene"}}')).toEqual({ state: 'compiling', version: '6000.3.28f1', scene: 'SplashScene' })
+  expect(L.unityLook('Multiple Unity instances found')).toBe(null)
+  expect(L.unityVersionOf('m_EditorVersion: 6000.3.28f1\nm_EditorVersionWithRevision: 6000.3.28f1 (abc)')).toBe('6000.3.28f1')
   boot(on, UNITY)
   mock.store(on, {})
-  const answers = ['{"success":true,"data":{"count":0,"isCompiling":true,"entries":[]}}', '{"success":true,"data":{"count":1,"isCompiling":false,"entries":[{"message":"CS0103: The name foo does not exist","file":"Assets/A.cs","line":4}]}}']
-  let asked = 0
+  const ERRORS = '{"success":true,"data":{"count":1,"isCompiling":false,"entries":[{"message":"CS0103: The name foo does not exist","file":"Assets/A.cs","line":4}]}}'
+  const CLEAN = '{"success":true,"data":{"count":0,"isCompiling":false,"entries":[]}}'
+  let calls: string[] = []
+  let isPlaying = false
+  let busyPolls = 1
+  let canRefresh = true
+  let errors = ERRORS
   on('tool.call', (_: unknown, e: any) => {
-    if (e.tool === L.UNITY_ERRORS_TOOL) return { result: {}, text: answers[Math.min(asked++, answers.length - 1)] } as any
-    if (e.tool === L.UNITY_STATE_TOOL) return { result: {}, text: '{"success":true,"data":{"isPlaying":false}}' } as any
+    if (e.tool === L.UNITY_STATE_TOOL) {
+      // the editor compiles only once it was asked to look at the files
+      const isCompiling = calls.some(c => c.startsWith('refresh')) && busyPolls-- > 0
+      calls.push('state')
+      return { result: {}, text: JSON.stringify({ success: true, data: { isPlaying, isCompiling, unityVersion: '6000.3.28f1', activeScene: 'SplashScene' } }) } as any
+    }
+    if (e.tool === L.UNITY_MENU_TOOL) {
+      calls.push(`refresh:${e.menuPath}`)
+      return (canRefresh ? { result: {}, text: '{"success":true,"data":{"success":true}}' } : { deny: 'not allowed' }) as any
+    }
+    if (e.tool === L.UNITY_ERRORS_TOOL) {
+      calls.push('errors')
+      return { result: {}, text: errors } as any
+    }
     return { result: {} } as any
   })
   on('turn.complete', () => ({ text: '' }) as any)
@@ -1315,20 +1337,233 @@ test('verify gate in Unity: after a C# edit the editor\'s compile errors go back
     return { text: e.text } as any
   })
   await $.session.start({ cwd: '/tmp/x', surface: null, isInteractive: false } as any)
+  const ui = await $.ui.mount({ plugin: 'command-deck', surface: 'terminal', component: 'Pane', props: {}, requestId: 'command-deck' } as any)
+  expect(await texts(ui)).toContain('not checked in this chat')
+  const turn = async (file_path: string, playsAfter = false) => {
+    calls = []
+    await $.tool.call({ tool: 'Edit', file_path, old_string: 'a', new_string: 'b' } as any)
+    isPlaying = playsAfter
+    await $.turn.complete({ answer: 'done', reason: 'answer' } as any)
+    await tick()
+  }
+  const wait = async (ms: number) => {
+    await clock.advance(ms)
+    await tick()
+  }
+  // two idle answers in a row: the polls come 1 s and then 2 s after the refresh
+  const settle = async () => {
+    await wait(1000)
+    await wait(2000)
+  }
   // a change to a file Unity does not compile asks the editor nothing
-  await $.tool.call({ tool: 'Edit', file_path: 'Docs/notes.md', old_string: 'a', new_string: 'b' } as any)
-  await $.turn.complete({ answer: 'done', reason: 'answer' } as any)
-  await tick()
-  expect(asked).toBe(0)
-  await $.tool.call({ tool: 'Edit', file_path: 'Assets/A.cs', old_string: 'a', new_string: 'b' } as any)
-  await $.turn.complete({ answer: 'done', reason: 'answer' } as any)
-  await tick()
-  expect(asked).toBe(1) // still compiling: the deck waits, it does not report
+  await turn('Docs/notes.md')
+  expect(calls).toEqual([])
+  // a script changed: the compile is asked for, and nothing is read while the editor is still busy
+  await turn('Assets/A.cs')
+  expect(calls.filter(c => c.startsWith('refresh'))).toEqual(['refresh:Assets/Refresh'])
+  expect(calls).not.toContain('errors')
+  await wait(1000)
+  expect(calls).not.toContain('errors') // the editor said "compiling": the deck waits, it does not report
   expect(sent).toEqual([])
-  await clock.advance(2000)
-  await tick()
-  expect(asked).toBe(2)
+  await wait(2000)
+  expect(calls).not.toContain('errors') // idle once may be before the compile began: a second answer is waited for
+  await wait(3000)
+  expect(calls.filter(c => c === 'errors').length).toBe(1)
+  expect(calls.indexOf('refresh:Assets/Refresh')).toBeLessThan(calls.indexOf('errors'))
   expect(sent.length).toBe(1)
   expect(sent[0]).toContain('Unity compile errors')
   expect(sent[0]).toContain('CS0103: The name foo does not exist')
+  expect(await texts(ui)).toContain('✖ 1 errors')
+  // a compile the deck asked for, saw end and found no errors in: clean
+  errors = CLEAN
+  busyPolls = 0
+  await turn('Assets/A.cs')
+  await settle()
+  expect(sent.length).toBe(1)
+  expect(await texts(ui)).toContain('✔ clean')
+  expect(await texts(ui)).toMatch(/verify ✔/)
+  // the refresh was not answered: no errors listed proves nothing, and the old tick does not stay
+  canRefresh = false
+  await turn('Assets/A.cs')
+  await settle()
+  expect(await texts(ui)).toContain('not proven')
+  expect(await texts(ui)).not.toMatch(/verify ✔/)
+  // errors the editor lists are real whether or not the refresh was answered
+  errors = ERRORS
+  await turn('Assets/A.cs')
+  await settle()
+  expect(sent.length).toBe(2)
+  // an editor that started playing is never asked to recompile under the running game
+  canRefresh = true
+  await wait(20_000)
+  await turn('Assets/A.cs', true)
+  await settle()
+  expect(calls.filter(c => c.startsWith('refresh'))).toEqual([])
+  expect(calls).not.toContain('errors')
+  await ui.unmount()
+})
+
+// ------------------------------------------------------------ 1.7.0: corrections as rules, plan review, goal, compaction, Unity section, dead weight
+
+test('corrections: a typed correction is only offered as a rule; Save shows the drafted rule, Keep writes that text once, No keeps nothing', async ($, on) => {
+  expect(L.isCorrection("No, don't use var here, always write the type")).toBe(true)
+  expect(L.isCorrection('Run the tests first from now on, then say done')).toBe(true)
+  expect(L.isCorrection('Add a pause button to the HUD and wire it')).toBe(false)
+  expect(L.isCorrection('no')).toBe(false) // too short to hold a rule
+  expect(L.isCorrection('/command-deck never mind that')).toBe(false) // a command is not a correction
+  expect(L.isCorrection(`never ${'x'.repeat(500)}`)).toBe(false) // a long message is a brief, not a correction
+  expect(L.parseRule('- "Write the type, never var."\nmore', 'own words here')).toBe('Write the type, never var.')
+  expect(L.parseRule('NONE', 'no not like that one')).toBe('no not like that one')
+  expect(L.parseRule(undefined, 'own words here')).toBe('own words here')
+  expect(L.addRule('', 'Write the type.')).toBe('- Write the type.\n')
+  expect(L.addRule('- A rule\n', 'B rule')).toBe('- A rule\n- B rule\n')
+  expect(L.addRule('- Write the type.\n', 'write the TYPE.')).toBe('- Write the type.\n') // a repeat adds nothing
+  const files = boot(on)
+  mock.store(on, {})
+  let ruleCalls = 0
+  on('model.complete', (_: unknown, e: any) => {
+    if (e.system !== L.RULE_SYSTEM) return { value: { isAnswered: false, reason: 'timeout' } } as any
+    ruleCalls += 1
+    return { value: { isAnswered: true, text: 'Write the type, never var.', usage: {} } } as any
+  })
+  on('prompt.submit', (_: unknown, e: any) => ({ text: e.text }) as any)
+  on('ui.toast', () => ({ value: undefined }) as any)
+  await $.session.start({ cwd: '/tmp/x', surface: null, isInteractive: false } as any)
+  const ui = await $.ui.mount({ plugin: 'command-deck', surface: 'terminal', component: 'Pane', props: {}, requestId: 'command-deck' } as any)
+  const kept = () => Object.entries(files).find(([k]) => k.endsWith('conventions.md'))?.[1] ?? ''
+  await $.prompt.submit(human('Add a pause button to the HUD and wire it up'))
+  expect(await texts(ui)).not.toContain('Keep as a rule')
+  await $.prompt.submit(human("No, don't use var here, always write the type"))
+  expect(await texts(ui)).toContain('Keep as a rule for new chats?')
+  expect(kept()).toBe('') // the words alone keep nothing
+  expect(ruleCalls).toBe(0) // and cost nothing until the person says yes
+  // Save drafts the rule and shows it: still nothing is written
+  await ui.press({ key: 'rule-yes' })
+  await tick()
+  expect(await texts(ui)).toContain('Keep this rule for new chats?')
+  expect(await texts(ui)).toContain('Write the type, never var.')
+  expect(kept()).toBe('')
+  // Keep writes exactly the text that was shown
+  await ui.press({ key: 'rule-keep' })
+  await tick()
+  expect(kept()).toBe('- Write the type, never var.\n')
+  expect(await texts(ui)).not.toContain('Keep')
+  // the same correction again: offered, but the file keeps one bullet
+  await $.prompt.submit(human("No, don't use var here, always write the type"))
+  await ui.press({ key: 'rule-yes' })
+  await tick()
+  await ui.press({ key: 'rule-keep' })
+  await tick()
+  expect(kept()).toBe('- Write the type, never var.\n')
+  // an offer the person ignored leaves with their next message
+  await $.prompt.submit(human('Never touch the font atlas while Unity is open'))
+  await $.prompt.submit(human('Add a pause button to the HUD and wire it up'))
+  expect(await texts(ui)).not.toContain('Keep as a rule')
+  // No: gone, nothing kept, no model call
+  await $.prompt.submit(human('Never touch the font atlas while Unity is open'))
+  await ui.press({ key: 'rule-no' })
+  await tick()
+  expect(await texts(ui)).not.toContain('Keep as a rule')
+  expect(kept()).toBe('- Write the type, never var.\n')
+  expect(ruleCalls).toBe(2)
+  await ui.unmount()
+})
+
+test('plan review and goal: a risky plan starts with a plan review numbered 0, and a brief that says when it is done offers the goal', () => {
+  const plan = (titles: string[], tier: 'haiku' | 'sonnet' | 'opus' = 'sonnet', code = true) => ({ isClear: true, questions: [], prompt: 'p', code, tasks: titles.map(title => ({ title, tier, why: '', parallel: false })) })
+  const risky = plan(['Add delete account endpoint', 'Wire the button'])
+  expect(L.planReviewSteps(risky).map(t => t.title)).toEqual([L.PLAN_REVIEW_TITLE])
+  expect(L.planReviewSteps(risky, false)).toEqual([]) // switched off
+  expect(L.planReviewSteps(plan(['Rename label']))).toEqual([]) // small
+  expect(L.planReviewSteps(plan(['a', 'b', 'c', 'd', 'e'], 'sonnet', false))).toEqual([]) // no code
+  expect(L.planReviewSteps(plan(['Plan review of the auth design', 'Add token check']))).toEqual([]) // the plan already has one
+  const told = L.planContext(risky, { first: L.planReviewSteps(risky), added: [{ title: L.REVIEW_TITLE, tier: 'sonnet', parallel: false }] })
+  expect(told).toContain(`0. [Sonnet] ${L.PLAN_REVIEW_TITLE}`)
+  expect(told).toContain('1. [Sonnet] Add delete account endpoint') // the plan's own numbers hold
+  expect(told).toContain(`3. [Sonnet] ${L.REVIEW_TITLE}`)
+  expect(told).toContain(L.PLAN_REVIEW_HOW)
+  expect(L.planContext(risky)).not.toContain('Plan review')
+  // both reviews on one plan: the plan review does not pass for the diff review
+  expect(L.withReviewTask(risky.tasks, risky).at(-1)!.title).toBe(L.REVIEW_TITLE)
+  expect(L.doneWhen('Goal: show version. Constraints: small. Done when: tests green, validate green. Verify: run tests.')).toBe('tests green, validate green.')
+  expect(L.doneWhen('Goal: x. Definition of done: title shows v1.7.0')).toBe('title shows v1.7.0')
+  expect(L.doneWhen('Goal: rename the label')).toBe('')
+  expect(L.doneWhen('Not done: the old screen. Goal: x')).toBe('') // a bare "done:" is not a condition
+  expect(L.doneWhen('Done when: clear')).toBe('') // one word is no condition (and could read as a subcommand)
+  expect(L.doneWhen('Done when:\n- tests pass\n- lint clean\n\nOut of scope: the server')).toBe('- tests pass - lint clean')
+  expect(L.doneWhen('')).toBe('')
+})
+
+test('compaction: the summary is told what to keep unless the person said, and file rules are given again afterwards', async ($, on) => {
+  boot(on, { 'rules-ts.md': 'Use named exports only.' })
+  mock.store(on, { 'deck.tasks': [card(1, 'Fix the relay timeout'), card(2, 'Old work', 'done')] })
+  on('tool.call', () => ({ result: {} }) as any)
+  const told: (string | undefined)[] = []
+  const MESSAGES = [{ role: 'user', text: 'summary', toolUses: [] }]
+  on('session.compact', (_: unknown, e: any) => {
+    told.push(e.instructions)
+    return { messages: MESSAGES } as any
+  })
+  await $.session.start({ cwd: '/tmp/x', surface: null, isInteractive: false } as any)
+  const edit = async (agentId?: string) => (((await $.tool.call({ tool: 'Edit', file_path: 'src/a.ts', old_string: 'a', new_string: 'b', ...(agentId ? { agentId } : {}) } as any)) as any).context ?? []) as string[]
+  expect((await edit()).length).toBe(1)
+  expect((await edit('a1')).length).toBe(1)
+  expect(await edit()).toEqual([])
+  await $.session.compact({ trigger: 'auto', messages: MESSAGES } as any)
+  expect(told[0]).toContain('Keep word for word')
+  expect(told[0]).toContain('Fix the relay timeout')
+  expect(told[0]).not.toContain('Old work')
+  expect((await edit()).length).toBe(1) // the main chat lost them to the summary: given again
+  expect(await edit('a1')).toEqual([]) // a subagent's own context was not compacted
+  await $.session.compact({ trigger: 'manual', instructions: 'keep the API notes', messages: MESSAGES } as any)
+  expect(told[1]).toBe('keep the API notes') // the person's own words are left as written
+  await $.session.compact({ trigger: 'auto', agentId: 'a1', messages: MESSAGES } as any)
+  expect(told[2]).toBeUndefined() // a subagent's compaction is its own
+})
+
+test('Unity rules: the editor version is pinned, a scene or prefab step reads back what it wrote, a gameplay step ends with a Play check', () => {
+  const versioned = G.unityRules('Fix null check in ScoreKeeper.cs', '6000.3.28f1')
+  expect(versioned).toContain('this project runs Unity 6000.3.28f1')
+  expect(G.unityRules('Fix null check in ScoreKeeper.cs')).not.toContain('Unity version')
+  expect(versioned).toContain('Assets/Refresh')
+  expect(versioned).not.toContain('Read back after write')
+  expect(G.unityRules('Move the seat prefab anchors')).toContain('Read back after write')
+  expect(G.unityRules('Change gameplay of the 29 Mini mode')).toContain('Play check')
+  expect(L.planContext({ isClear: true, questions: [], prompt: 'p', csharp: true, tasks: [{ title: 'Fix score', tier: 'sonnet', why: '', parallel: false }] }, { unity: true, unityVersion: '6000.3.28f1' })).toContain('Unity 6000.3.28f1')
+})
+
+test('dead weight: skills and servers listed in every chat but not called here show dearest first, and leave once called', async ($, on) => {
+  const now = 1_791_868_793_562
+  const day = 86_400_000
+  const items: L.Weight[] = [
+    { name: 'gsap-core', kind: 'skill', tokens: 120 },
+    { name: 'ponytail:ponytail-audit', kind: 'skill', tokens: 90 },
+    { name: 'unity', kind: 'mcp', tokens: 4000 },
+    { name: 'tiny', kind: 'skill', tokens: 5 },
+  ]
+  expect(L.useKey('skill', 'ponytail:ponytail-audit')).toBe(L.useKey('skill', 'ponytail-audit'))
+  expect(L.useKey('mcp', 'plugin:x:y')).not.toBe(L.useKey('mcp', 'y')) // a server is known by its whole name
+  expect(L.deadWeight(items, {}, now, 7).map(x => x.name)).toEqual(['unity', 'gsap-core', 'ponytail:ponytail-audit']) // dearest first, crumbs left out
+  expect(L.deadWeight(items, { 'mcp:unity': now - day, 'skill:ponytail_audit': now - 8 * day }, now, 7).map(x => x.name)).toEqual(['gsap-core', 'ponytail:ponytail-audit'])
+  expect(L.deadWeight([], {}, now, 7)).toEqual([])
+  boot(on, {}, { context: { breakdown: { mcpTools: [{ serverName: 'unity', tokens: 4000, isLoaded: true }, { serverName: 'graft', tokens: 900, isLoaded: true }], skills: { tokens: 210, skillFrontmatter: [{ name: 'gsap-core', tokens: 120 }, { name: 'docx', tokens: 90 }] } } } })
+  mock.store(on, {})
+  on('tool.call', () => ({ result: {} }) as any)
+  await $.session.start({ cwd: '/tmp/x', surface: null, isInteractive: false } as any)
+  await tick()
+  const ui = await $.ui.mount({ plugin: 'command-deck', surface: 'terminal', component: 'Pane', props: {}, requestId: 'command-deck' } as any)
+  await ui.press({ key: 'min-DEAD WEIGHT' }) // folded by default: the title line carries the total
+  const seen = await texts(ui)
+  expect(seen).toContain('4.2k tokens every chat')
+  expect(seen).toContain('gsap-core')
+  expect(seen).not.toContain('graft') // a tool the deck counts savings for is never called dead
+  expect(seen).toContain('since the deck began watching')
+  await $.tool.call({ tool: 'Skill', skill: 'gsap-core' } as any)
+  await $.tool.call({ tool: 'mcp__unity__unity_editor_state' } as any)
+  await tick()
+  const after = await texts(ui)
+  expect(after).not.toContain('gsap-core')
+  expect(after).toContain('docx')
+  expect(after).toContain('90 tokens every chat')
+  await ui.unmount()
 })

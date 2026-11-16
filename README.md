@@ -38,16 +38,24 @@ It is my one-shot attempt to put most of what I know about saving tokens and cos
 - **Graft first.** In a repo Graft has indexed, the deck tells the model to search with Graft, counts Graft's CLI answers as well as its MCP ones, never moves it behind tool search, and adds one short reminder after a plain grep in a turn where Graft sat unused.
 - **Verify gate.** Put your test or build command in `.claude/deck/verify.txt` (or run `/command-deck verify <command>`). After every turn that changes files the deck runs it in the background. A pass costs no tokens; a failure goes back to the model with the end of the output, twice at most per message, so "done" means passing. A command that came from a project file is never run until you allow that exact text in the pane.
 - **Fresh-eyes review.** A plan that is big (5 steps or more), hard (an Opus step) or touches something costly to get wrong (auth, deletes, migrations, payments) gets a step where a Sonnet subagent with no history reads only the diff and hunts bugs.
+- **Plan review.** The same kind of risky plan starts with a step where a subagent reads the brief and the steps before any code is written.
 - **Rules at edit time.** The first edit of a file type gives the model that type's rules once, plan or no plan: your own `.claude/deck/rules-<ext>.md` (for example `rules-ts.md`), and the Unity rules for a script in a Unity project.
 - **Guards.** `.claude/deck/guards.md` holds one `pattern => reason` per line, for example `git push*--force => Ask first`. The pattern is plain text, with `*` for anything in between, matched without case (never a regular expression). A shell command it matches is refused, and the model reads the reason. A guard can only refuse.
 - **Stuck detector.** The same call failing the same way three times in a row earns one line telling the model to stop and change approach.
 - **Project notes in every chat.** A new chat starts with the newest lasting facts and `.claude/deck/conventions.md` (`/command-deck conventions` has the model scan the project and write it).
-- **Unity.** The Unity rules are a core plus topic packs (UI, performance, tweens, hierarchy, game doc) picked by the words of the step, so a small fix pays for about half of them. A subagent that touches C# gets them in its own prompt from the deck, not pasted by the main chat. With the Unity MCP connected, a C# edit is refused while the editor is in Play mode, compile errors after C# edits go back to the model, and a C# plan's smoke card asks for a clean compile and passing EditMode tests.
+- **Save as rule.** When a typed message reads like a correction, the pane offers "Save as rule". That drafts a one-line rule and shows it; "Keep" writes exactly that text to `.claude/deck/conventions.md`. Nothing is kept without both presses.
+- **Unity.** The Unity rules are a core plus topic packs (UI, performance, tweens, hierarchy, game doc) picked by the words of the step, so a small fix pays for about half of them. A subagent that touches C# gets them in its own prompt from the deck, not pasted by the main chat. With the Unity MCP connected, a C# edit is refused while the editor is in Play mode. After a C# edit the deck asks the editor to refresh, waits until it is idle, then sends any compile errors back to the model. "Clean" shows only for a compile the deck asked for and saw finish. A C# plan's smoke card asks for a clean compile and passing EditMode tests.
+- **Unity pane section.** In a Unity project the pane shows the editor version, state (idle, compiling or playing), scene and last compile result, with "Ask editor" and "Compile now" buttons.
+- **Unity rule lines.** Short rules for pinning the editor version, reading a scene or prefab value back after writing it, and ending gameplay work with an exact Play check.
 - **Project memory.** Each handoff also gathers up to three lasting facts (a command that works, a trap, a decision) into `.claude/deck/memory.md`, and every later handoff carries them.
 - **Handoff memory.** Writes a handoff note and starts a fresh chat at a context % you choose, or on a new topic.
 - **Cache guard and keep-warm.** Warns before an expensive cold-cache rewrite and can ping to keep the cache warm.
 - **Smart tool deferral.** Moves MCP servers the work does not need behind tool search.
 - **Savings counter.** Estimated tokens and dollars saved per tool (Graft, Caveman, Optimizer, RTK, Ponytail, Graphify). Every tool keeps its row and a plain state: ● on, ◐ installed but not running, ○ not installed.
+- **Work until done.** When the plan brief says when the work is done, the Plan brief section shows a "Work until done" button. The button hands that line to Claude Code's own `/goal`.
+- **Compaction.** When the chat is compacted, the summary is told to keep the goal, rules, decisions and open tasks. File-type rules are given again on the next edit.
+- **Dead weight.** The Dead weight section lists skills and MCP servers that every chat loads but this project has not called for 7 days, dearest first, with the tokens each one costs in every chat.
+- **Version in the header.** The pane header shows the running version in gray.
 
 ### The pane
 
@@ -55,7 +63,7 @@ The header holds Fresh chat and Arrange, and one line that reads at a glance: co
 
 A bar is a row of cells. Each cell is a box the layout sizes, holding one block glyph, so a bar is always one line and always spans its full width, at any window size and in any font. The pane's column count only decides how many cells a bar has. Every meter has its own colour (5-hour, Week, Context, and each model); for a limit, the percent turns yellow, then red, as it nears the top.
 
-The pictures below are from 1.4; the layout has since changed as described here.
+The pictures below are from 1.4; the layout has since changed as described here. New ones for 1.7.0 are pending.
 
 <p align="center"><img src="assets/header.png" alt="Command Deck header" width="420"></p>
 
@@ -72,6 +80,9 @@ Usage shows the 5-hour and weekly limits, the context bar and the cache state. `
 The savings counter estimates what Graft, the optimizer, Graphify, Ponytail, caveman mode and Command Deck itself kept out of the context. The Deck row is Command Deck's own part (routing, fresh chats, keep-warm, smart tools). The last row is the total of every row above, an educated guess like the rows it adds up.
 
 <p align="center"><img src="assets/savings.png" alt="Token saved today panel with estimated tokens and dollars per source" width="420"></p>
+
+<!-- TODO screenshot: assets/unity.png (Unity section) -->
+<!-- TODO screenshot: assets/weight.png (Dead weight section) -->
 
 ## Install
 
@@ -157,8 +168,11 @@ Change a value in any of these ways:
 | `contextBreakdown` | 0 | 1 splits the Context bar by what fills it and lists the parts. |
 | `verifyGate` | 1 | Run the project's check after a turn that changes files. 0 is off. |
 | `freshReview` | 1 | Add the fresh-eyes review step to risky plans. 0 is off. |
+| `planReview` | 1 | Add a plan review step (a subagent reads the brief and steps before any code) to risky plans. 0 is off. |
 | `briefReports` | 1 | Ask every subagent for a tight final report. 0 is off. |
 | `unityPlayGuard` | 1 | Refuse a C# edit while the Unity editor is in Play mode. 0 is off. |
+| `learnRules` | 1 | Offer "Save as rule" when a typed message reads like a correction. 0 is off. |
+| `deadWeightDays` | 7 | Days a skill or MCP server must go uncalled in this project before the Dead weight section lists it. |
 | `saveModePct` | 80 | Past this percent of the 5-hour or weekly limit, effort routing sends nothing above medium. 0 is off. |
 | `reducedMotion` | 0 | 1 holds the Doing-card bots still (terminals have no reduced-motion setting). |
 | `coldGuard` | 1 | 0 off, 1 warn, 2 also hold the first send. |
@@ -193,11 +207,13 @@ claude plugin validate .
 
 ## Files it writes
 
-Only under `.claude/deck/` in your project: `rules.md` (your rules for new chats, edit freely), `memory.md` (lasting facts gathered at handoffs, edit freely), `verify.txt` (only when you run `/command-deck verify <command>`), handoffs, progress notes and `rules-log.md`. It reads, and never writes, `guards.md`, `conventions.md` and `rules-<ext>.md` there. Nothing leaves your machine except the model calls Claude Code already makes.
+Only under `.claude/deck/` in your project: `rules.md` (your rules for new chats, edit freely), `memory.md` (lasting facts gathered at handoffs, edit freely), `verify.txt` (when you run `/command-deck verify <command>`, or write it yourself), handoffs, progress notes and `rules-log.md`. It reads, and never writes, `guards.md` and `rules-<ext>.md` there. `conventions.md` is written only by `/command-deck conventions` or when you press Save as rule. Nothing leaves your machine except the model calls Claude Code already makes.
 
 ## Optional tools
 
 Every savings row shows its tool's state. Graft and token-optimizer count as installed when their MCP servers are connected (the Graft skill without its server reads Not Active). Graft also counts as on in any repo that has its index (`graft/INDEX.md`), since its CLI works without the server. Caveman is part of the deck and needs nothing installed. Ponytail and Graphify count as installed when the chat lists their skills (or the Graphify MCP server); Their figures are estimates. RTK's row comes from `rtk gain` (today's saved tokens) and `rtk verify` (Not Active when its Claude Code hook is not registered).
+
+The Unity checks (Play mode guard, compile gate and the Unity pane section) need a Unity MCP whose tools are named `mcp__unity__unity_editor_state`, `mcp__unity__unity_get_compilation_errors` and `mcp__unity__unity_execute_menu_item`. With another Unity MCP these checks stay off.
 
 The board follows the chat's own task list: new tasks from `TodoWrite` or `TaskCreate` (or `Todo:` lines in a reply) become cards, and a card moves to Doing or Done when its task is started or completed (or a `Done:` line names it; a `Skip:` line closes it as skipped). Every subagent shows as its own card.
 
@@ -205,7 +221,7 @@ The board follows the chat's own task list: new tasks from `TodoWrite` or `TaskC
 
 Command Deck is a mod, so it uses powers a plain skill does not. Each one, and why:
 
-- **Writes files.** Only under `.claude/deck/` in the project (rules, memory, handoffs, progress notes, history, tip files). The paths are fixed text in `hooks/register.tsx`. It never edits build, start-up, settings or instruction files.
+- **Writes files.** Only under `.claude/deck/` in the project (rules, memory, handoffs, progress notes, history, tip files, and `conventions.md` when you run `/command-deck conventions` or keep a rule from a correction). The paths are fixed text in `hooks/register.tsx`. It never edits build, start-up, settings or instruction files.
 - **Starts programs.** Your verify command, through `/bin/sh -c`, after a turn that changed files: only the first line of `.claude/deck/verify.txt`, and only once you allowed that exact text for that project (the allowance is kept outside the repo, so a cloned project cannot run anything). `git` (status and refs for the git panel), `rtk` (`gain` and `verify`, only to show the RTK savings row; absent means the row says Not Installed), and `open` / `xdg-open` / `explorer` to show the `.claude/deck/` folder. Apart from the verify command, each command is fixed text; nothing from the chat is run as a command.
 - **Reads the conversation, sends nothing out.** It reads chat and usage data to fill the board and savings. It sends no data to any server of its own; the only model calls are the ones Claude Code makes (including the Haiku agents below).
 - **Starts agents.** The planner and the board judge run as Haiku agents. They get the user's request, up to `plannerChatMessages` recent messages (each cut to `plannerChatChars` characters) and the task titles.
@@ -214,7 +230,7 @@ Command Deck is a mod, so it uses powers a plain skill does not. Each one, and w
 - **Changes the turn's effort.** With `autoEffort` on, the `turn.step` hook sends the main chat's requests at the level the planner picked (never above your own level unless `autoEffort` is 2). It never changes the main chat's model.
 - **Adds a reminder after a tool result.** In a Graft-indexed repo, at most one line per turn and three per chat, after a plain grep.
 - **Refuses tool calls.** A shell command matching a line of the project's `guards.md`, and a C# edit while the Unity editor plays. Nothing else is refused.
-- **Calls tools itself.** Two read-only tools of the Unity MCP (`unity_editor_state`, `unity_get_compilation_errors`), only in a Unity project, to check Play mode and compile errors.
+- **Calls tools itself.** Unity MCP tools, only in a Unity project: two read-only ones (`unity_editor_state`, `unity_get_compilation_errors`) to check Play mode and compile errors, and `unity_execute_menu_item` to ask the editor to refresh after a C# edit.
 - **Rewrites subagent prompts.** It appends a line asking for a tight report, and the Unity rules for a subagent that touches C#. Forks, teammates and workflow agents are left as written.
 - **Changes agent model.** The `agent.spawn` hook sets `model: haiku` on Explore agents and on agents for a Haiku-tier board card. It does not change permission modes, and it passes every other event on unchanged.
 - **Credentials.** It reads no keys or tokens. The only local reads are the project's `.claude/deck/` files and the tool output above.
