@@ -8,6 +8,8 @@ import type { CtxPart, CtxServer, Draft, GitInfo, Hist, Learn, Limits, Pending, 
 const PANE = 'command-deck'
 // absolute once load() has run: a relative path would follow the shell's working directory and scatter .claude folders through the project
 let DIR = '.claude/deck'
+// from plugin.json at load, so the pane shows which build is running; empty when it cannot be read
+let VERSION = ''
 
 const tasksA = atom({ plugin: 'command-deck', key: 'tasks' } as const, [] as Task[])
 const goalA = atom({ plugin: 'command-deck', key: 'goal' } as const, '')
@@ -343,6 +345,11 @@ async function load($: any) {
     /* keep the relative default */
   }
   hasGraft = await $.fs.exists(`${DIR.replace(/\.claude\/deck$/, '')}graft/INDEX.md`).catch(() => false)
+  try {
+    VERSION = String(JSON.parse(String(await $.fs.read(`${$.plugin.root}/.claude-plugin/plugin.json`))).version ?? '')
+  } catch {
+    /* no version shown */
+  }
   effortTrust = ((await $.store.get('deck.effortTrust').catch(() => undefined)) as Record<string, L.EffortTrust> | undefined) ?? {}
   graftNudges = 0
   lastStep = {}
@@ -1808,6 +1815,7 @@ export const register: Register = (on, options) => {
         <Box justifyContent="space-between" flexWrap="wrap" columnGap={1}>
           <Text bold color="cyan" wrap="truncate-end">
             ◆ COMMAND DECK
+            {VERSION ? <Text color="gray" bold={false}>{` v${VERSION}`}</Text> : null}
           </Text>
           <Box gap={1} flexShrink={0}>
             <Button key="fresh" label="⇢ Fresh chat" onPress={() => void fresh($).then(t => $.ui.toast(t))} />
