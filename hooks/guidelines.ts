@@ -128,23 +128,66 @@ export function finalPass(plan: Plan): string {
   ].join('\n')
 }
 
-/** Unity projects, C# steps only (planContext gates it). Subagents see nothing but their prompt, so the main agent must paste this into each C# subagent's prompt. */
-export const UNITY_RULES = [
-  'Unity C# rules (paste into the prompt of every subagent that writes or edits C#; new and edited code only, never decided by asking):',
+// Unity C# rules, split so a step pays only for what it touches: a core that always rides, and topic packs picked by
+// plain keywords (no model call). The wording of every rule is the owner's; only the grouping is the deck's.
+const UNITY_HEAD = 'Unity C# rules (new and edited code only, never decided by asking; the deck hands these to every subagent that edits C#, so do not paste them into subagent prompts):'
+const UNITY_CORE = [
   '- Scene and prefab first: anything an artist may move, size or time (position, gap, angle, arc, duration) is a serialized field or an object in the scene or prefab, with a [Tooltip] and a Scene-view gizmo when spatial. Code reads it and holds no coordinates or layout numbers; it creates no layout objects at runtime unless the same object is also in the scene.',
-  '- One prefab per repeated block: a UI block that appears twice or more (seat, card row, popup, score panel, button group) is one prefab in Common with its look as fields. Scenes hold instances; a game that differs uses a variant or overrides, never a pasted copy. Before building UI, list the prefabs that already exist.',
   '- Reuse first: search Common and the other games for an existing component. A second game that needs one moves it into Common as a configurable component. Merge near-identical scripts or objects into Common before building on them; never copy a script between games.',
   '- References: [SerializeField] links set in the prefab or scene. No GetComponent, AddComponent, GetChild, Find*, FindObjectOfType or Camera.main in gameplay code; when unavoidable, look it up once in Awake or Start and cache it. A missing link logs a red error naming the object.',
-  '- Hot paths (Update, FixedUpdate, LateUpdate, OnGUI) allocate nothing: no lookups, LINQ, string concatenation or new collections. React to events, never poll. Look up by key in a Dictionary or HashSet cached outside the hot path.',
-  '- Pool what spawns or shows repeatedly: reuse inactive instances and deactivate instead of Destroy. Things spawned from code are prefabs.',
-  '- DOTween: every tween gets .SetLink(gameObject). Use a Sequence only to chain tweens. A timer is a stored DOVirtual.DelayedCall, killed before rescheduling and in teardown.',
   '- Structure: one owner per state; others read it or listen to its event, never copy it. Simple over clever: no base class, generic or pattern until two real users. One component, one job. Shared numbers live in one ScriptableObject or parent prefab field. Screens are small nested prefabs; a variant differs only by overrides. UI takes events or serialized refs, not singletons.',
-  '- Children follow parents: a highlight, glow, label or popup is a child of what it marks. A follow script only when a child is impossible (world-space particles). Draw order is sibling order, not a code offset.',
-  '- Hierarchy: group objects under coloured Hierarchy Header dividers (Common/Scripts/Layout/HierarchyHeader), one per section, in every scene; the same section kind has the same colour in every scene (it comes from the header name via HierarchyHeaderPalette; menu Card Adda > Hierarchy > Apply Header Colours To All Scenes). No unused, duplicate or disabled-leftover objects. Name objects by their job, never default or "(N)" names. Delete an object only after proving zero references; list what was deleted.',
-  '- UI: anchors for static layouts; layout groups only for dynamic lists, never nested. Static and changing UI on separate canvases; Raycast Target off on non-interactive graphics.',
   '- Names: serialized mUpperCamel, private _lowerCamel, locals lowerCamel, enum members ALL_UPPER, bools is/can/has, callbacks on...Callback, type suffixes Go/Trans/Cg/Image/Button/Text/Tween. Methods start with a verb. Guard clauses first. No var. One LINQ call per line. Comment only a non-obvious why. Nullable values carry [CanBeNull] (JetBrains.Annotations).',
-  '- Performance and Android: measure before and after on the lowest-spec device. Trim pools on scene change; Incremental GC on; compressed GPU textures per platform; Resources folder lean, bulk content in Addressables; raise code stripping only with a build test; ship an App Bundle (AAB).',
-  '- Game doc: each game keeps GAMEPLAY_LOOP.md (entry point, loop, seats, where to edit visuals); update it with the change.',
   '- Hooks block Camera.main, GameObject.Find*, FindObjectOfType and `new GameObject(` in added Minigames C#, and text edits of .meta, .unity and .prefab: change scenes through Unity instead. A line with `allow-deck: <reason>` is skipped.',
   '- Finish clean: delete the fields, objects and disabled leftovers your change replaces. End by saying in plain words what to move or change in the hierarchy to alter the result.',
-].join('\n')
+  '- Editor state: before the first C# edit read unity_editor_state and never edit a script while the editor is in Play mode; after C# edits read unity_get_compilation_errors and fix every error before calling the step done.',
+]
+export type UnityPack = { id: string; tags: RegExp; rules: string[] }
+export const UNITY_PACKS: UnityPack[] = [
+  {
+    id: 'ui',
+    tags: /\b(ui|hud|buttons?|panels?|popups?|dialogs?|screens?|menus?|canvas|layout|labels?|texts?|icons?|badges?|toasts?|seats?|rows?|highlight|glow)\b/i,
+    rules: [
+    '- One prefab per repeated block: a UI block that appears twice or more (seat, card row, popup, score panel, button group) is one prefab in Common with its look as fields. Scenes hold instances; a game that differs uses a variant or overrides, never a pasted copy. Before building UI, list the prefabs that already exist.',
+    '- Children follow parents: a highlight, glow, label or popup is a child of what it marks. A follow script only when a child is impossible (world-space particles). Draw order is sibling order, not a code offset.',
+    '- UI: anchors for static layouts; layout groups only for dynamic lists, never nested. Static and changing UI on separate canvases; Raycast Target off on non-interactive graphics.',
+    ],
+  },
+  {
+    id: 'perf',
+    tags: /\b(update|spawn\w*|pool\w*|perf\w*|fps|frames?|alloc\w*|gc|memory|optimi[sz]\w*|android|build size|loops?|particles?|effects?|addressables?)\b/i,
+    rules: [
+    '- Hot paths (Update, FixedUpdate, LateUpdate, OnGUI) allocate nothing: no lookups, LINQ, string concatenation or new collections. React to events, never poll. Look up by key in a Dictionary or HashSet cached outside the hot path.',
+    '- Pool what spawns or shows repeatedly: reuse inactive instances and deactivate instead of Destroy. Things spawned from code are prefabs.',
+    '- Performance and Android: measure before and after on the lowest-spec device. Trim pools on scene change; Incremental GC on; compressed GPU textures per platform; Resources folder lean, bulk content in Addressables; raise code stripping only with a build test; ship an App Bundle (AAB).',
+    ],
+  },
+  {
+    id: 'tween',
+    tags: /\b(tween\w*|dotween|anim\w*|fade\w*|mov(e|es|ing)|slid\w*|shak\w*|scal\w*|bounc\w*|delay\w*|timers?|sequences?)\b/i,
+    rules: [
+    '- DOTween: every tween gets .SetLink(gameObject). Use a Sequence only to chain tweens. A timer is a stored DOVirtual.DelayedCall, killed before rescheduling and in teardown.',
+    ],
+  },
+  {
+    id: 'hierarchy',
+    tags: /\b(scenes?|hierarchy|prefabs?|objects?|headers?|dividers?|renam\w*|clean ?up|delet\w*)\b/i,
+    rules: [
+    '- Hierarchy: group objects under coloured Hierarchy Header dividers (Common/Scripts/Layout/HierarchyHeader), one per section, in every scene; the same section kind has the same colour in every scene (it comes from the header name via HierarchyHeaderPalette; menu Card Adda > Hierarchy > Apply Header Colours To All Scenes). No unused, duplicate or disabled-leftover objects. Name objects by their job, never default or "(N)" names. Delete an object only after proving zero references; list what was deleted.',
+    ],
+  },
+  {
+    id: 'doc',
+    tags: /\b(games?|minigames?|gameplay|modes?|rules?)\b/i,
+    rules: [
+    '- Game doc: each game keeps GAMEPLAY_LOOP.md (entry point, loop, seats, where to edit visuals); update it with the change.',
+    ],
+  },
+]
+
+/** Every Unity rule: the core and all packs. For a place with no step text to pick by. */
+export const UNITY_RULES = [UNITY_HEAD, ...UNITY_CORE, ...UNITY_PACKS.flatMap(p => p.rules)].join('\n')
+
+/** The Unity rules for some work, named by its text (step titles, a subagent's prompt, a file path): the core, plus each pack a word of the text calls for. */
+export function unityRules(text: string): string {
+  return [UNITY_HEAD, ...UNITY_CORE, ...UNITY_PACKS.filter(p => p.tags.test(text)).flatMap(p => p.rules)].join('\n')
+}

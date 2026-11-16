@@ -1,8 +1,8 @@
 {
   "name": "command-deck",
-  "version": "1.5.3",
+  "version": "1.6.0",
   "icon": "./.claude-plugin/icon.png",
-  "description": "Plan with the right model and effort per task, kanban board, usage and git panel, caveman mode, handoff and project memory.",
+  "description": "Plan with the right model and effort per task, verify gate, kanban board, usage and git panel, caveman mode, handoff and project memory.",
   "types": "./types/index.d.ts",
   "userConfig": {
     "reducedMotion": {
@@ -40,6 +40,30 @@
       "title": "Context breakdown in Usage (1 on, 0 off)",
       "description": "Split the Context bar by what fills it (system prompt, tools, messages) and list each part under it. Off shows one plain bar.",
       "default": 0
+    },
+    "verifyGate": {
+      "type": "number",
+      "title": "Verify gate (1 on, 0 off)",
+      "description": "After a turn that changes files, run the project's check (.claude/deck/verify.txt, once you allowed it) in the background; a failure goes back to the model. In a Unity project, C# edits are also checked against the editor's compile errors.",
+      "default": 1
+    },
+    "freshReview": {
+      "type": "number",
+      "title": "Fresh-eyes review on risky plans (1 on, 0 off)",
+      "description": "A plan that is big, hard or touches something costly to get wrong gets a step where a subagent reads only the diff and hunts bugs.",
+      "default": 1
+    },
+    "briefReports": {
+      "type": "number",
+      "title": "Tight subagent reports (1 on, 0 off)",
+      "description": "Every subagent is asked for a short final report: findings with file:line, no account of its steps.",
+      "default": 1
+    },
+    "unityPlayGuard": {
+      "type": "number",
+      "title": "Unity: no C# edit in Play mode (1 on, 0 off)",
+      "description": "Before a C# edit in a Unity project, ask the editor (Unity MCP) whether it is playing and refuse the edit while it is.",
+      "default": 1
     },
     "autoCompactPct": {
       "type": "number",

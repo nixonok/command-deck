@@ -1,6 +1,6 @@
 // Pure logic of Command Deck: no engine calls, so every function here is unit-testable.
 
-import { finalPass, guidelineExtras, UNITY_RULES } from './guidelines'
+import { finalPass, guidelineExtras, unityRules } from './guidelines'
 import type { CtxPart, GitInfo, Plan, Savings, Status, Task, Tier } from '../types'
 
 export const TIER_MODEL: Record<Tier, string> = {
@@ -46,6 +46,7 @@ Rules:
   haiku  = precise, mechanical, one place: rename, text change, config value, comment, log line, simple fix with the exact spot named.
   sonnet = normal feature or bug work: several files, some planning, tests, UI wiring.
   opus   = hard reasoning only: architecture, subtle bugs with unknown cause, concurrency, security, large refactors.
+- A bug fix in a project that has tests gets a step just before it, on the same tier: "Write failing test for <the bug>". No such step for a text, config or layout change.
 - "title": terse caveman-style wording, short plain words, no filler or articles, under 9 words (for example "Fix null check in HideBannerAds", not "Fix the null reference check that happens in the HideBannerAds method").
 - "why" is 6 words or fewer.
 - code=true when any step changes code, tests, scenes, assets or build config; false when the work is only writing, research or an answer in chat.
@@ -443,8 +444,9 @@ export function isWorthAttaching(plan: Plan): boolean {
  * The plan the model reads with the message: steps, how to run them, the step-specific engineering rules and the final
  * pass. The Unity C# rules ride only in a Unity project and only when a step writes C# (an unknown answer keeps them).
  */
-export function planContext(plan: Plan, opts: { unity?: boolean } = {}): string {
-  const steps = plan.tasks.map(
+export function planContext(plan: Plan, opts: { unity?: boolean; added?: { title: string; tier: Tier; parallel: boolean }[] } = {}): string {
+  const added = opts.added ?? []
+  const steps = [...plan.tasks, ...added].map(
     (t, i) => `${i + 1}. [${TIER_LABEL[t.tier]}${t.parallel ? ' ∥' : ''}] ${t.title}`,
   )
   return [
@@ -453,7 +455,8 @@ export function planContext(plan: Plan, opts: { unity?: boolean } = {}): string 
     'Steps:',
     ...steps,
     'How to run it: do Sonnet and Opus steps yourself. Each [Haiku] step goes to its own subagent with model "haiku", given only its title, the exact spot to change and its done condition, no project history. Start the ∥ Haiku steps together only when they edit different files; steps on one file run in order. Read-heavy search goes to an Explore subagent; long builds and tests run in the background. Check each subagent edit before the next step. Report which steps ran on Haiku, which ran in parallel and any failure. Board: give each subagent its step title word for word as its description; log your own steps with TodoWrite (or TaskCreate/TaskUpdate) under the same titles, or, without those tools, end the reply with `Done: <step title>` for each step verified and `Skip: <step title>` for each step dropped on purpose.',
-    ...(opts.unity && plan.csharp !== false ? [UNITY_RULES] : []),
+    ...(opts.unity && plan.csharp !== false ? [unityRules(plan.tasks.map(t => `${t.title} ${t.why}`).join(' '))] : []),
+    ...(added.some(t => t.title === REVIEW_TITLE) ? [REVIEW_HOW] : []),
     ...[guidelineExtras(plan)].filter(Boolean),
     ...(plan.tasks.length > 1 ? [finalPass(plan)] : []),
   ].join('\n')
@@ -750,6 +753,8 @@ export const TIPS: string[] = [
   'Keep CLAUDE.md short and specific; every line is paid for on every turn.',
   'Read the diff before you accept a big change; /code-review catches what a skim misses.',
   'Put build output, logs and generated folders in your ignore files so searches skip them.',
+  'Set a verify command (/command-deck verify <your test or build command>): the deck runs it after each change and sends failures back to the model.',
+  'Put a "never do this" in .claude/deck/guards.md as pattern => reason (plain text, * for anything between): the deck refuses the command and tells the model why.',
 ]
 
 /** How often the Random Tips card moves on to another tip. */
@@ -836,12 +841,140 @@ export const KEEP_SERVERS = ['graft', 'token_optimizer', 'graphify']
 export const serverOfTool = (tool: string): string | null => /^mcp__(.+?)__/.exec(tool)?.[1] ?? null
 
 export const SMOKE_TITLE = 'Smoke test run: confirm the whole change works'
+// a Unity plan that writes C# is checked where Unity can check it: its own compiler and its EditMode tests
+export const SMOKE_TITLE_UNITY = 'Smoke test run: Unity compiles clean, EditMode tests pass (Unity MCP)'
 // a plan that changes code ends with a smoke test run, so the board is not done until the work is checked; a plan
 // with no code (release notes, research) gets none, or its card would sit in Todo with nothing to test
-export function withSmokeTask<T extends { title: string; tier: 'haiku' | 'sonnet' | 'opus'; why: string; parallel: boolean }>(tasks: T[], code = true): (T | { title: string; tier: 'haiku'; why: string; parallel: boolean })[] {
+type Step = { title: string; tier: Tier; why: string; parallel: boolean }
+export function withSmokeTask<T extends Step>(tasks: T[], code = true, isUnityCs = false): (T | Step)[] {
   if (!code || tasks.some(t => /smoke/i.test(t.title))) return tasks
-  return [...tasks, { title: SMOKE_TITLE, tier: 'haiku', why: 'Run the project smoke test and report the result', parallel: false }]
+  return [...tasks, { title: isUnityCs ? SMOKE_TITLE_UNITY : SMOKE_TITLE, tier: 'haiku', why: 'Run the project smoke test and report the result', parallel: false }]
 }
+
+// ------------------------------------------------------------ fresh-eyes review
+export const REVIEW_TITLE = 'Fresh-eyes review: subagent reads only the diff'
+export const REVIEW_HOW = `How to run "${REVIEW_TITLE}": start one subagent with model "sonnet" that gets no history, only the output of \`git diff\` and two lines on what the change is meant to do. Ask it for correctness bugs ranked by severity, each with file:line and a failing case, no style notes. Fix the real ones, say which you rejected and why.`
+const RISKY_WORDS = /\b(secur\w*|auth\w*|token|password|payment|purchase|migrat\w*|delet\w*|concurren\w*|race|encrypt\w*)\b/i
+
+/** A plan worth a second pair of eyes: it changes code and is big (5 steps or more), hard (an Opus step) or touches something costly to get wrong. */
+export function isRiskyPlan(plan: Pick<Plan, 'code' | 'tasks'>): boolean {
+  return plan.code !== false && (plan.tasks.length >= 5 || plan.tasks.some(t => t.tier === 'opus' || RISKY_WORDS.test(t.title)))
+}
+
+/** The plan's steps with the review step added after the work, for a risky plan only; a plan that already has one is left alone. */
+export function withReviewTask<T extends Step>(tasks: T[], plan: Pick<Plan, 'code' | 'tasks'>, isOn = true): (T | Step)[] {
+  if (!isOn || !isRiskyPlan(plan) || tasks.some(t => /review/i.test(t.title))) return tasks
+  return [...tasks, { title: REVIEW_TITLE, tier: 'sonnet', why: 'Catch bugs before the smoke test', parallel: false }]
+}
+
+// ------------------------------------------------------------ verify gate
+// After a turn that changed files the deck runs the project's own check in the background. A pass costs no tokens; a
+// failure goes back to the model with the end of the output. The command is the person's: read from
+// .claude/deck/verify.txt and run only once they allowed that exact text, so a cloned repo cannot run anything.
+/** The verify command in a verify.txt: its first line that is not blank or a # comment. */
+export const verifyCommand = (file: string): string => file.split('\n').map(l => l.trim()).find(l => l && !l.startsWith('#')) ?? ''
+
+// how often one request may be sent back to the model before the deck only reports: the same fix failing twice means stop
+export const VERIFY_MAX_SENDS = 2
+
+/** What the model reads when the check fails: the command, its exit code and the end of its output (where the failure is). */
+export function verifyFailText(what: string, exitCode: number | undefined, output: string): string {
+  const tail = output.trim().split('\n').slice(-60).join('\n').slice(-4000)
+  return `Command Deck verify failed after your last change: ${what}${exitCode === undefined ? '' : ` (exit ${exitCode})`}.\n${tail || '(no output)'}\nFind the cause and fix it. Do not weaken the check.`
+}
+
+/** A file edit that should trigger the check: a tool that writes a file, answered without error. */
+export const isFileEdit = (tool: string): boolean => tool === 'Edit' || tool === 'Write' || tool === 'NotebookEdit' || tool === 'MultiEdit'
+
+/** The lowercase extension of a path ("cs", "tsx"), or "" when it has none. */
+export const extOf = (path: unknown): string => /\.([a-z0-9]+)$/i.exec(String(path ?? ''))?.[1]?.toLowerCase() ?? ''
+
+// ------------------------------------------------------------ Unity editor state (through the Unity MCP's own tools)
+export const UNITY_STATE_TOOL = 'mcp__unity__unity_editor_state'
+export const UNITY_ERRORS_TOOL = 'mcp__unity__unity_get_compilation_errors'
+const dataOf = (text: unknown): Record<string, unknown> | null => {
+  try {
+    const d = (JSON.parse(String(text)) as { data?: unknown }).data
+    return d && typeof d === 'object' ? (d as Record<string, unknown>) : null
+  } catch {
+    return null
+  }
+}
+/** True only when the editor's own answer says it is in Play mode; an answer that cannot be read is not Play. */
+export const unityIsPlaying = (text: unknown): boolean => dataOf(text)?.isPlaying === true
+/** The compile check's answer: still compiling, or the errors as text ('' when there are none or the answer cannot be read). */
+export function unityCompile(text: unknown): { isCompiling: boolean; errors: string } {
+  const d = dataOf(text)
+  const entries = Array.isArray(d?.entries) ? d.entries : []
+  return { isCompiling: d?.isCompiling === true, errors: entries.length ? entries.map(x => (typeof x === 'string' ? x : JSON.stringify(x))).join('\n') : '' }
+}
+export const UNITY_PLAY_DENY = 'Unity is in Play mode. A C# edit now recompiles under the running game and can hang the editor. Ask the person to stop Play (or stop it yourself if they already agreed), then make this edit again.'
+
+// ------------------------------------------------------------ guards
+// .claude/deck/guards.md: one rule a line, "pattern => reason". A Bash command the pattern matches is refused with the
+// reason. The pattern is plain text with * for "anything between", matched without case: never a regular expression,
+// because a project file must not be able to hang or crash the hook. A guard can only refuse, so the worst a cloned
+// repo's guards can do is refuse commands and say why.
+export type Guard = { parts: string[]; reason: string }
+export function parseGuards(file: string): Guard[] {
+  return file.split('\n').flatMap(line => {
+    const m = /^\s*(?:[-*]\s+)?(.+?)\s*=>\s*(.+?)\s*$/.exec(line)
+    if (!m || line.trim().startsWith('#')) return []
+    const parts = m[1]!.toLowerCase().split('*').map(x => x.trim()).filter(Boolean)
+    // a pattern with next to nothing in it would refuse everything
+    return parts.join('').length >= 4 ? [{ parts, reason: m[2]! }] : []
+  })
+}
+/** The first guard whose parts all appear in the command, in order. Linear in the command's length, which is capped. */
+export function guardFor(guards: Guard[], command: unknown): Guard | undefined {
+  const text = String(command ?? '').slice(0, 8000).toLowerCase()
+  return guards.find(g => {
+    let at = 0
+    for (const part of g.parts) {
+      const i = text.indexOf(part, at)
+      if (i < 0) return false
+      at = i + part.length
+    }
+    return true
+  })
+}
+export const guardDeny = (g: Guard): string => `Blocked by this project's guard (.claude/deck/guards.md): ${g.reason}`
+
+// ------------------------------------------------------------ stuck detector
+export const STUCK_AFTER = 3
+export const STUCK_NUDGE = 'The same call has failed three times with the same error. Stop repeating it: say what the error means, check the assumption behind the call, and try a different approach.'
+/** A short name for a failed call, so the same failure can be counted: the tool and the start of its error. */
+export const failureKey = (tool: string, text: unknown): string => `${tool}|${String(text ?? '').replace(/\s+/g, ' ').slice(0, 160)}`
+
+// ------------------------------------------------------------ subagent briefs
+// what a subagent writes back is read by the main chat at full price, so every brief asks for a tight report
+export const BRIEF_SUFFIX = '\n\nKeep your final report tight: findings and changes with file:line, what to check, nothing about the steps you took.'
+
+// ------------------------------------------------------------ what a new chat is told about the project
+export const CONVENTIONS_ASK = `Scan this project and write .claude/deck/conventions.md, under 200 words, bullets only: the test, build and lint commands that really work here (run --help or read the config, do not guess), the naming and file layout the code follows, the libraries it uses for common jobs, and anything a newcomer would get wrong. Use an Explore subagent for the reading. If the project has a fast test or build command, also offer to put it in .claude/deck/verify.txt.`
+/** The project notes a new chat starts with: lasting facts and conventions, cut to a size worth paying for on every turn. */
+export function projectSection(memory: string, conventions: string, max = 1600): string {
+  const facts = memoryFacts(memory).slice(-12)
+  const parts = [
+    ...(conventions.trim() ? [`Conventions:\n${conventions.trim()}`] : []),
+    ...(facts.length ? [`Lasting facts:\n${facts.map(f => `- ${f}`).join('\n')}`] : []),
+  ]
+  return parts.length ? clip(`Project notes kept by Command Deck (.claude/deck/):\n${parts.join('\n')}`, max) : ''
+}
+
+// ------------------------------------------------------------ effort record
+// what each effort level really cost today, so a wrong pick shows: a "low" turn that wrote far more than low turns do
+export type EffortStat = { turns: number; out: number; flailed: number }
+export function addEffortStat(stats: Record<string, EffortStat>, level: string, out: number): Record<string, EffortStat> {
+  const s = stats[level] ?? { turns: 0, out: 0, flailed: 0 }
+  // judged against the level's own mean so far, and only once there are enough turns to have one
+  const isFlail = (level === 'low' || level === 'medium') && s.turns >= 3 && out > (s.out / s.turns) * 4
+  return { ...stats, [level]: { turns: s.turns + 1, out: s.out + Math.max(0, out), flailed: s.flailed + (isFlail ? 1 : 0) } }
+}
+export const effortLine = (stats: Record<string, EffortStat>): string =>
+  EFFORTS.filter(l => stats[l]?.turns)
+    .map(l => `${l} ${stats[l]!.turns}× ${compact(stats[l]!.out / stats[l]!.turns)}${stats[l]!.flailed ? ` (${stats[l]!.flailed} ran long)` : ''}`)
+    .join(' · ')
 
 // titles from a TodoWrite call that are not on the board yet (compared case-insensitively)
 export function newTodoTitles(todos: unknown, have: string[]): string[] {

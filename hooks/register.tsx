@@ -34,6 +34,11 @@ const minA = atom({ plugin: 'command-deck', key: 'min' } as const, { GIT: true, 
 const arrangeA = atom({ plugin: 'command-deck', key: 'arrange' } as const, false)
 // the effort level the deck is sending this turn's requests with; '' when it leaves the session's own level
 const effortA = atom({ plugin: 'command-deck', key: 'effort' } as const, '')
+// the verify gate: what the last check said, or a command waiting for the person's yes
+type Verify = { state: 'idle' | 'ask' | 'running' | 'pass' | 'fail'; command: string; note?: string }
+const verifyA = atom({ plugin: 'command-deck', key: 'verify' } as const, { state: 'idle', command: '' } as Verify)
+// what each effort level cost today (turns, output tokens, turns that ran long)
+const effortStatsA = atom({ plugin: 'command-deck', key: 'effortStats' } as const, {} as Record<string, L.EffortStat>)
 const LEARN = 'command-deck-learn'
 const CHOICES = ['Yes', 'No', 'Not sure']
 let fromPanel = false
@@ -73,6 +78,27 @@ let lastStep: Record<string, { sent?: string; session?: string }> = {}
 let effortTrust: Record<string, L.EffortTrust> = {}
 // caveman: the person's "normal mode" turns the reminder and the count off for the rest of the chat
 let isCavemanOff = false
+// the project, read once at session start: a Unity project, its guards, and the notes a new chat is told
+let isUnity = false
+let guards: L.Guard[] = []
+let projectNotes = ''
+// verify gate: files changed this turn, a check in flight, a failure waiting for the next typed message
+let editedTurn = false
+let csEditedTurn = false
+let isVerifying = false
+let verifyAgain = false
+let verifySends = 0
+let verifyNote = ''
+// Unity MCP: calls that got no answer in a row (three and the deck stops asking); when Play was last seen off
+let unityMisses = 0
+let playClearAt = 0
+// rules already given, by agent and file type, so each is paid for once
+const rulesSent = new Set<string>()
+// stuck detector: the last failure of each agent and how often it repeated
+const fails = new Map<string, { key: string; n: number }>()
+// the level the turn's main requests went out at, for the effort record
+let turnSent: string | undefined
+let statsDay = ''
 let spin: { cancel: () => void } | null = null
 const completions = new Map<string, Done>()
 const waiters = new Map<string, (d: Done) => void>()
@@ -119,6 +145,145 @@ async function appendHistoryFile($: any, items: { at: number; title: string; tie
 
 // lasting project facts, gathered at each handoff and carried into every later one
 const memoryFile = () => `${DIR}/memory.md`
+const rootDir = () => DIR.replace(/\.claude\/deck$/, '')
+
+/** A project file's text, or '' when it is missing or cannot be read. */
+async function readFile($: any, path: string): Promise<string> {
+  try {
+    return (await $.fs.exists(path)) ? String(await $.fs.read(path)) : ''
+  } catch {
+    return ''
+  }
+}
+
+// ------------------------------------------------------------ verify gate
+// Contract: after a turn that changed files, the project's check runs once in the background. Invariants: only a
+// command the person allowed (that exact text, for this project) is ever run; one check at a time, a change that lands
+// meanwhile runs one more; a failure reaches the model at most VERIFY_MAX_SENDS times per typed message.
+async function verifyFor($: any): Promise<{ command: string; isAllowed: boolean; isRefused: boolean }> {
+  const command = L.verifyCommand(await readFile($, `${DIR}/verify.txt`))
+  const ok = ((await $.store.get('deck.verifyOk').catch(() => undefined)) as Record<string, string> | undefined) ?? {}
+  const no = ((await $.store.get('deck.verifyNo').catch(() => undefined)) as Record<string, string> | undefined) ?? {}
+  return { command, isAllowed: Boolean(command) && ok[DIR] === command, isRefused: Boolean(command) && no[DIR] === command }
+}
+
+// `shown` is the command the pane showed: the yes or no is for that text and no other. A file that changed since
+// (an edit, a pull) is asked about again, never allowed on the old answer.
+async function answerVerify($: any, shown: string, isYes: boolean) {
+  const { command } = await verifyFor($)
+  if (!shown || command !== shown) {
+    await update($, verifyA, () => (command ? { state: 'ask' as const, command } : { state: 'idle' as const, command: '' }))
+    return
+  }
+  const key = isYes ? 'deck.verifyOk' : 'deck.verifyNo'
+  const have = ((await $.store.get(key).catch(() => undefined)) as Record<string, string> | undefined) ?? {}
+  await $.store.set(key, { ...have, [DIR]: shown })
+  await update($, verifyA, () => ({ state: 'idle' as const, command: shown }))
+  if (isYes) void runVerify($, true).catch(() => undefined)
+}
+
+// A call to the Unity MCP that cannot hang a hook: an editor that does not answer in time counts as a miss. Three
+// misses in a row and the deck stops asking for this chat (no Unity MCP here); any answer starts the count again, so
+// one dropped call while Unity reloads its scripts turns nothing off.
+async function askUnity($: any, input: Record<string, unknown>, waitMs: number): Promise<string | null> {
+  if (unityMisses >= 3) return null
+  try {
+    const r = (await Promise.race([$.tool.call(input), $.clock.sleep(waitMs).then(() => null)])) as { deny?: unknown; text?: string } | null
+    if (!r || r.deny || typeof r.text !== 'string') throw new Error('no answer')
+    unityMisses = 0
+    return r.text
+  } catch {
+    unityMisses += 1
+    return null
+  }
+}
+
+// Unity's own compiler, asked through the Unity MCP. A compile still running is waited for with a growing pause, a few
+// times; an editor that cannot be asked is no failure.
+async function unityCompile($: any): Promise<{ what: string; output: string } | 'clean' | 'unknown'> {
+  for (let wait = 2000; wait <= 8000; wait += 2000) {
+    const text = await askUnity($, { tool: L.UNITY_ERRORS_TOOL, severity: 'error', count: 20 }, 8000)
+    if (text === null) return 'unknown'
+    const c = L.unityCompile(text)
+    if (c.errors) return { what: 'Unity compile errors', output: c.errors }
+    if (!c.isCompiling) return 'clean'
+    await $.clock.sleep(wait).catch(() => undefined)
+  }
+  return 'unknown'
+}
+
+async function runVerify($: any, isForced = false) {
+  if (opt('verifyGate', 1) <= 0) return
+  if (isVerifying) {
+    verifyAgain = true
+    return
+  }
+  isVerifying = true
+  try {
+    do {
+      verifyAgain = false
+      const wasCs = csEditedTurn
+      csEditedTurn = false
+      const compiled = isUnity && wasCs ? await unityCompile($) : 'unknown'
+      let failure: { what: string; exitCode?: number; output: string } | null = typeof compiled === 'object' ? compiled : null
+      const v = await verifyFor($)
+      let isChecked = compiled !== 'unknown'
+      if (!failure && v.command && !v.isAllowed) {
+        // never run on the file's say-so: the person allows this exact command once, in the pane
+        const was = await read($, verifyA)
+        if (!v.isRefused && !(was.state === 'ask' && was.command === v.command)) {
+          await update($, verifyA, () => ({ state: 'ask' as const, command: v.command }))
+          $.ui.toast(`Command Deck can run "${v.command}" after code changes. Allow it in the pane.`)
+        }
+      } else if (!failure && v.isAllowed) {
+        isChecked = true
+        await update($, verifyA, () => ({ state: 'running' as const, command: v.command }))
+        try {
+          const r = await $.process.run(['/bin/sh', '-c', v.command], { cwd: rootDir() || undefined, timeoutMs: 600_000 })
+          if (r.exitCode !== 0) failure = { what: v.command, exitCode: r.exitCode, output: `${r.stdout ?? ''}\n${r.stderr ?? ''}` }
+        } catch (err) {
+          failure = { what: v.command, output: `did not finish: ${String((err as Error)?.message ?? err)}` }
+        }
+      }
+      if (failure) await verifyFailed($, failure)
+      else if (isChecked) await verifyPassed($, v.isAllowed ? v.command : 'Unity compile')
+      else if (isForced && !v.command) $.ui.toast('No verify command yet: /command-deck verify <command> sets one.')
+    } while (verifyAgain)
+  } finally {
+    isVerifying = false
+  }
+}
+
+async function verifyPassed($: any, what: string) {
+  await update($, verifyA, () => ({ state: 'pass' as const, command: what }))
+  verifyNote = ''
+  // a passing check is the smoke test: its card closes once it is the only work left
+  const now = await $.clock.now()
+  const tasks = await read($, tasksA)
+  const open = tasks.filter(t => t.status === 'todo' || t.status === 'doing')
+  if (what !== 'Unity compile' && open.length === 1 && /^smoke test run/i.test(open[0]!.title)) {
+    await update($, tasksA, (l: Task[]) => l.map(t => (t.id === open[0]!.id ? { ...L.setCard(t, 'done', now), note: 'verify passed' } : t)))
+    await save($)
+    await writeProgress($)
+  }
+}
+
+async function verifyFailed($: any, f: { what: string; exitCode?: number; output: string }) {
+  const text = L.verifyFailText(f.what, f.exitCode, f.output)
+  await update($, verifyA, () => ({ state: 'fail' as const, command: f.what, note: f.output.trim().split('\n').filter(Boolean).pop()?.slice(0, 120) }))
+  const isBusy = isTurnLive || isRunning || isCompacting
+  if (verifySends < L.VERIFY_MAX_SENDS && !isBusy) {
+    verifySends += 1
+    $.ui.toast(`Verify failed: ${f.what}. Sent back to the model.`)
+    await $.prompt.submit({ text }).catch(() => {
+      verifyNote = text
+    })
+  } else {
+    // sent back twice already, or a turn is running: the next typed message carries it
+    verifyNote = text
+    $.ui.toast(verifySends >= L.VERIFY_MAX_SENDS ? `Verify still fails after ${L.VERIFY_MAX_SENDS} tries: ${f.what}. It rides with your next message.` : `Verify failed: ${f.what}. It rides with your next message.`)
+  }
+}
 
 async function openHistoryFolder($: any) {
   try {
@@ -182,6 +347,21 @@ async function load($: any) {
   graftNudges = 0
   lastStep = {}
   isCavemanOff = false
+  isUnity = await $.fs.exists(`${rootDir()}ProjectSettings/ProjectVersion.txt`).catch(() => false)
+  guards = L.parseGuards(await readFile($, `${DIR}/guards.md`))
+  projectNotes = L.projectSection(await readFile($, memoryFile()), await readFile($, `${DIR}/conventions.md`))
+  rulesSent.clear()
+  fails.clear()
+  unityMisses = 0
+  playClearAt = 0
+  editedTurn = false
+  csEditedTurn = false
+  verifySends = 0
+  verifyNote = ''
+  turnSent = undefined
+  statsDay = L.dayKey(await $.clock.now())
+  const stats = ((await $.store.get(`deck.effortStats.${statsDay}`).catch(() => undefined)) as Record<string, L.EffortStat> | undefined) ?? {}
+  await update($, effortStatsA, () => stats)
   const tasks = ((await $.store.get('deck.tasks')) as Task[] | undefined) ?? []
   const goal = ((await $.store.get('deck.goal')) as string | undefined) ?? ''
   // questions are never carried into a new session: they would cling to the pane and ask what was answered
@@ -354,6 +534,9 @@ async function projectName($: any): Promise<string> {
   }
 }
 
+/** A plan's steps as the board shows them: the review step for a risky plan, then the smoke test for one that changes code. */
+const planSteps = (plan: Plan) => L.withSmokeTask(L.withReviewTask(plan.tasks, plan, opt('freshReview', 1) > 0), plan.code, isUnity && plan.csharp === true)
+
 async function analyze($: any, ask: string, answers: string[], questions: string[] = [], media = 0): Promise<Plan | null> {
   for (const model of ['haiku', 'sonnet']) {
     const r = await $.model.complete({
@@ -416,7 +599,8 @@ async function runPlan($: any, ask: string, answers: string[]): Promise<string> 
     await save($)
     return ['A few questions first (answer with /command-deck-plan <your answers>):', ...plan.questions.map((q, i) => `  ${i + 1}. ${q}`)].join('\n')
   }
-  const tasks: Task[] = L.withSmokeTask(plan.tasks, plan.code).map((t, i) => ({ id: i + 1, title: t.title, tier: t.tier, why: t.why, parallel: t.parallel, status: 'todo', tokens: 0 }))
+  const steps = planSteps(plan)
+  const tasks: Task[] = steps.map((t, i) => ({ id: i + 1, title: t.title, tier: t.tier, why: t.why, parallel: t.parallel, status: 'todo', tokens: 0 }))
   await archive($)
   await update($, tasksA, () => tasks)
   await update($, goalA, () => plan.prompt)
@@ -670,6 +854,9 @@ async function runClean($: any, ask: CleanAsk): Promise<string> {
     await addSaving('fresh', ask.shed, $)
     deferServers = new Set()
     usedServers.clear()
+    rulesSent.clear()
+    fails.clear()
+    verifyNote = ''
     graftNudges = 0
     isCavemanOff = false
     turnEffort = undefined
@@ -808,7 +995,8 @@ async function autoPlan($: any, e: any): Promise<string | 'drop' | null> {
     await save($)
     return pending ? `Answers to the earlier questions are in this message. Original request: ${pending.ask}` : null
   }
-  const tasks: Task[] = L.withSmokeTask(plan.tasks, plan.code).map((t, i) => ({ id: i + 1, title: t.title, tier: t.tier, why: t.why, parallel: t.parallel, status: 'todo', tokens: 0 }))
+  const steps = planSteps(plan)
+  const tasks: Task[] = steps.map((t, i) => ({ id: i + 1, title: t.title, tier: t.tier, why: t.why, parallel: t.parallel, status: 'todo', tokens: 0 }))
   await archive($)
   await update($, tasksA, () => tasks)
   await update($, goalA, () => plan.prompt)
@@ -827,9 +1015,9 @@ async function autoPlan($: any, e: any): Promise<string | 'drop' | null> {
   } catch {
     /* logging is best effort */
   }
-  // Unity projects only, and only when a step writes C# (planContext checks that)
-  const unity = await $.fs.exists('ProjectSettings/ProjectVersion.txt').catch(() => false)
-  return L.planContext(plan, { unity }) + extra
+  // Unity projects only, and only when a step writes C# (planContext checks that); the main chat then has the rules
+  if (isUnity && plan.csharp !== false) rulesSent.add('main|unity')
+  return L.planContext(plan, { unity: isUnity, added: steps.slice(plan.tasks.length) }) + extra
 }
 
 // Learn more: a pane of its own with an explanation written for the tip. The text lives in session state only:
@@ -951,6 +1139,24 @@ export const register: Register = (on, options) => {
         await writeProgress($)
         return { text: `Task ${id} marked done.` }
       }
+      case 'verify': {
+        const command = rest.join(' ').trim()
+        if (command) {
+          await $.fs.write(`${DIR}/verify.txt`, `# Command Deck runs this after code changes (first line that is not a comment)\n${command}\n`)
+          // allowed as it is set only when the person typed it; a command another plugin or a script ran is asked for in the pane
+          if (e.origin?.kind === 'composer') {
+            const ok = ((await $.store.get('deck.verifyOk').catch(() => undefined)) as Record<string, string> | undefined) ?? {}
+            await $.store.set('deck.verifyOk', { ...ok, [DIR]: command })
+          }
+          void runVerify($, true).catch(() => undefined)
+          return { text: `Verify set: ${command}. It runs after each turn that changes files; a failure goes back to the model.` }
+        }
+        void runVerify($, true).catch(() => undefined)
+        return { text: 'Running the verify check now. Set one with /command-deck verify <command>.' }
+      }
+      case 'conventions':
+        void $.clock.after(50, () => void $.prompt.submit({ text: L.CONVENTIONS_ASK }).catch(() => undefined))
+        return { text: 'Asking for a scan of the project. New chats start with what it writes to .claude/deck/conventions.md.' }
       case 'clear':
         await archive($)
         await update($, tasksA, () => [])
@@ -959,7 +1165,7 @@ export const register: Register = (on, options) => {
         await save($)
         return { text: 'Board cleared.' }
       default:
-        return { text: 'Subcommands: warm [on|off], tools [on|off], run, fresh (handoff + new chat), handoff, compact, done N, clear. Also /command-deck-plan <ask>.' }
+        return { text: 'Subcommands: verify [command], conventions, warm [on|off], tools [on|off], run, fresh (handoff + new chat), handoff, compact, done N, clear. Also /command-deck-plan <ask>.' }
     }
   })
 
@@ -970,6 +1176,8 @@ export const register: Register = (on, options) => {
       { id: 'command-deck:house', text: L.houseSection({ graft: hasGraft }), scope: 'session' },
       { id: 'command-deck:clean-code', text: G.CORE, scope: 'session' },
       ...(opt('caveman', 1) > 0 ? [{ id: 'command-deck:caveman', text: L.CAVEMAN_SECTION, scope: 'session' as const }] : []),
+      // read once at session start, so the text is the same on every turn of the chat and stays in the prompt cache
+      ...(projectNotes ? [{ id: 'command-deck:project', text: projectNotes, scope: 'session' as const }] : []),
     ]
     return { ...out, sections: [...out.sections, ...extra] }
   })
@@ -1048,6 +1256,12 @@ export const register: Register = (on, options) => {
     graftNudgedTurn = false
     if (!e.text.startsWith('/')) await decideTools($, e.text).catch(() => undefined)
     const added = [...(planned ? [planned] : [])]
+    if (HUMAN.has(String(e.origin?.kind)) && !e.text.startsWith('/')) {
+      // a typed message is a new request: the failure it has not seen rides along, and the send count starts over
+      verifySends = 0
+      if (verifyNote) added.push(verifyNote)
+      verifyNote = ''
+    }
     // every typed message carries the caveman line: beside the newest message it holds where the system prompt fades
     if (!isCavemanOff && opt('caveman', 1) > 0 && HUMAN.has(String(e.origin?.kind)) && !e.text.startsWith('/')) added.push(L.CAVEMAN_REMINDER)
     if (added.length) return next({ ...e, context: [...(e.context ?? []), ...added] })
@@ -1077,6 +1291,7 @@ export const register: Register = (on, options) => {
         // judged only on a warm cache: a cold one writes the prefix again whatever the level
         isJudged = prev !== undefined && prev.sent !== sending && lastTouch > 0 && (await $.clock.now()) - lastTouch < opt('cacheTtlMin', 60) * 60_000
         lastStep = { ...lastStep, [family]: { sent: sending, session } }
+        turnSent = sending
         if ((await read($, effortA)) !== (level ?? '')) await update($, effortA, () => level ?? '')
       }
     } catch {
@@ -1096,8 +1311,19 @@ export const register: Register = (on, options) => {
   on('agent.spawn', async ($, e, next) => {
     const nextTodo = isAutoBoard ? (await read($, tasksA)).find(t => t.status === 'todo') : undefined
     const wantsHaiku = !e.model && (String(e.subagentType) === 'Explore' || (nextTodo?.tier === 'haiku' && String(e.subagentType) !== 'Plan'))
-    const input = wantsHaiku ? { ...e, model: 'haiku' } : e
+    // a fork or a teammate carries its own context and a workflow agent its script's prompt: those are left as written
+    // and a resumed agent's prompt is the message it is woken with, empty meaning none
+    const spawn = e as typeof e & { isTeammate?: true; workflow?: unknown; resume?: unknown }
+    const isPlain = !spawn.fork && !spawn.isTeammate && !spawn.workflow && !spawn.resume
+    const isReader = ['Explore', 'Plan'].includes(String(e.subagentType))
+    const brief = `${String(e.description ?? '')} ${String(e.prompt ?? '')}`
+    // a subagent that will touch C# gets the Unity rules in its own prompt: before it writes, and at no cost in output
+    // (an agent that only reads writes no code, so it gets none)
+    const unity = isPlain && !isReader && isUnity && /\.cs\b|\bC#|\bcsharp\b|MonoBehaviour/i.test(brief) ? `\n\n${G.unityRules(brief)}` : ''
+    const suffix = isPlain && opt('briefReports', 1) > 0 ? L.BRIEF_SUFFIX : ''
+    const input = { ...e, ...(wantsHaiku ? { model: 'haiku' } : {}), ...(unity || suffix ? { prompt: `${e.prompt}${unity}${suffix}` } : {}) }
     const res = (await next(input)) as { model?: string; agentId?: string; deny?: unknown }
+    if (unity && res?.agentId) rulesSent.add(`${res.agentId}|unity`)
     if (!isRunning && !res?.deny && res?.agentId) {
       const ask = e as { description?: unknown; prompt?: unknown }
       const tier = tierOf(res?.model ?? (input as { model?: string }).model) ?? 'sonnet'
@@ -1132,7 +1358,25 @@ export const register: Register = (on, options) => {
   on('tool.call', async ($, e, next) => {
     const tool = String(e.tool)
     // a tool's arguments sit on the event beside `tool` (e.command for Bash), not under an `input` key
-    const args = e as unknown as { todos?: unknown; subject?: unknown; taskId?: unknown; status?: unknown; command?: unknown }
+    const args = e as unknown as { todos?: unknown; subject?: unknown; taskId?: unknown; status?: unknown; command?: unknown; file_path?: unknown; notebook_path?: unknown }
+    const agent = String((e as { agentId?: string }).agentId ?? 'main')
+    const path = String(args.file_path ?? args.notebook_path ?? '')
+    const ext = L.isFileEdit(tool) ? L.extOf(path) : ''
+    // the project's own guards: a command a rule names is refused with the rule's reason
+    if (tool === 'Bash') {
+      const guard = L.guardFor(guards, args.command)
+      if (guard) return { deny: L.guardDeny(guard) } as never
+    }
+    // Unity: a script is never edited while the editor plays. "Not playing" is trusted for a few seconds; "playing" never
+    if (ext === 'cs' && isUnity && opt('unityPlayGuard', 1) > 0) {
+      const now = await $.clock.now()
+      if (now - playClearAt > 15_000) {
+        // an editor that does not answer in time is not held to be playing: the edit goes through
+        const state = await askUnity($, { tool: L.UNITY_STATE_TOOL }, 4000)
+        if (state !== null && L.unityIsPlaying(state)) return { deny: L.UNITY_PLAY_DENY } as never
+        if (state !== null) playClearAt = now
+      }
+    }
     if (isAutoBoard && !isRunning && !(e as { agentId?: string }).agentId && mainTask === null && agentTask.size === 0 && tool !== 'Agent') {
       mainTask = (await beginTask($, null))?.id ?? null
       if (mainTask !== null) startSpin($)
@@ -1178,6 +1422,9 @@ export const register: Register = (on, options) => {
       const made = res as { task?: { id?: unknown }; result?: { task?: { id?: unknown } } }
       modelTasks.set(String(made.task?.id ?? made.result?.task?.id ?? modelTasks.size + 1), created)
     }
+    // what the model reads right after this result: each note is given once, where it is needed
+    const notes: string[] = []
+    const got = res as { deny?: unknown; isError?: boolean; text?: string; context?: readonly string[] }
     try {
       if (L.serverOfTool(tool) === 'graphify' || (tool === 'Bash' && L.isGraphifyQuery(args.command))) {
         await addSaving('graphify', opt('graphifyTokensPerCall', 1200), $)
@@ -1186,20 +1433,44 @@ export const register: Register = (on, options) => {
       // graft answers the same way through its MCP tools and its CLI, so both are counted
       if (tool.startsWith('mcp__graft__') || (tool === 'Bash' && L.isGraftCli(command))) {
         graftUsedTurn = true
-        await addSaving('graft', L.parseGraftSaved((res as { text?: string }).text), $)
-      } else if (hasGraft && !graftUsedTurn && !graftNudgedTurn && graftNudges < L.GRAFT_NUDGE_MAX && L.isTextSearch(tool, command) && !(res as { deny?: unknown }).deny) {
+        await addSaving('graft', L.parseGraftSaved(got.text), $)
+      } else if (hasGraft && !graftUsedTurn && !graftNudgedTurn && graftNudges < L.GRAFT_NUDGE_MAX && L.isTextSearch(tool, command) && !got.deny) {
         // a plain text search while graft sat unused: say so once, after the result, where the model reads it next
         graftNudgedTurn = true
         graftNudges += 1
-        const got = res as { context?: readonly string[] }
-        return { ...res, context: [...(got.context ?? []), L.GRAFT_NUDGE] } as typeof res
+        notes.push(L.GRAFT_NUDGE)
       } else if (tool.startsWith('mcp__token-optimizer__smart_')) {
         await addSaving('optimizer', opt('optimizerTokensPerCall', 1200), $)
       }
+      if (ext && !got.deny && !got.isError) {
+        // a file changed: the verify gate runs when the turn ends
+        editedTurn = true
+        if (ext === 'cs') csEditedTurn = true
+        // rules for this file type, once per agent: the project's own file, and the Unity rules for a script
+        if (!rulesSent.has(`${agent}|${ext}`)) {
+          rulesSent.add(`${agent}|${ext}`)
+          const own = L.clip((await readFile($, `${DIR}/rules-${ext}.md`)).trim(), 3000)
+          const unity = ext === 'cs' && isUnity && !rulesSent.has(`${agent}|unity`) ? G.unityRules(path) : ''
+          if (unity) rulesSent.add(`${agent}|unity`)
+          const rules = [unity, own].filter(Boolean).join('\n')
+          if (rules) notes.push(`Rules for .${ext} files in this project (given once; check the edit you just made against them and fix what breaks one):\n${rules}`)
+        }
+      }
+      // the same call failing the same way, three times running: say so once
+      if (got.isError) {
+        const key = L.failureKey(tool, got.text)
+        const last = fails.get(agent)
+        const n = last?.key === key ? last.n + 1 : 1
+        fails.set(agent, { key, n })
+        if (n === L.STUCK_AFTER) notes.push(L.STUCK_NUDGE)
+      } else if (!got.deny) {
+        fails.delete(agent)
+      }
     } catch {
-      /* counting savings never breaks a tool call */
+      /* counting and notes never break a tool call */
     }
-    return res
+    // a refusal carries no notes: its own text is what the model reads
+    return notes.length && !got.deny ? ({ ...res, context: [...(got.context ?? []), ...notes] } as typeof res) : res
   })
 
   on('turn.complete', async ($, e, next) => {
@@ -1207,6 +1478,21 @@ export const register: Register = (on, options) => {
     const usage = e.usage
     if (!e.agentId) {
       isTurnLive = false
+      // the turn changed files and ended with an answer: the project's check runs in the background
+      // an aborted or failed turn keeps the mark, so the check still runs when the work does end
+      if (editedTurn && ((e as { reason?: string }).reason ?? 'answer') === 'answer') {
+        editedTurn = false
+        void runVerify($).catch(() => undefined)
+      }
+      if (turnSent && usage) {
+        const level = turnSent
+        const day = L.dayKey(await $.clock.now())
+        const stats = await update($, effortStatsA, (m: Record<string, L.EffortStat>) => L.addEffortStat(day === statsDay ? m : {}, level, usage.output_tokens ?? 0))
+        statsDay = day
+        await $.store.set(`deck.effortStats.${day}`, stats).catch(() => undefined)
+      }
+      // a turn that made no request of its own is not counted under the last one's level
+      turnSent = undefined
       lastAnswer = String((e as { answer?: string }).answer ?? '')
       // board lines (Done:/Skip:) would fill the kept tail, where an answer's offer or fix list sits
       remember('Assistant', lastAnswer.replace(/^(Todo|Done|Skip): .*$/gm, ''), 1200)
@@ -1296,7 +1582,7 @@ export const register: Register = (on, options) => {
   // pane holds at any width and in a proportional font, where a row of block characters did not.
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Text, Button } = $.ui.resolve(e)
-    const [tasks, usage, savings, git, limits, frame, tip, goal, pending, draft, mins, savedOrder, hist, answered, rtk, isArranging, effort] = await Promise.all([
+    const [tasks, usage, savings, git, limits, frame, tip, goal, pending, draft, mins, savedOrder, hist, answered, rtk, isArranging, effort, verify, effortStats] = await Promise.all([
       read($, tasksA),
       read($, usageA),
       read($, savingsA),
@@ -1314,6 +1600,8 @@ export const register: Register = (on, options) => {
       read($, rtkA),
       read($, arrangeA),
       read($, effortA),
+      read($, verifyA),
+      read($, effortStatsA),
     ])
     const Input = ($.ui.resolve(e) as any).Input as ((p: Record<string, unknown>) => any) | undefined
     const now = await $.clock.now()
@@ -1443,6 +1731,7 @@ export const register: Register = (on, options) => {
       ...(limits.sevenDay ? [{ text: `week ${limits.sevenDay.pct.toFixed(0)}%`, color: L.barColor(limits.sevenDay.pct) }] : []),
       ...(lastTouch ? [{ text: `cache ${isColdNow ? 'cold' : 'warm'}`, color: cacheColor }] : []),
       ...(effort ? [{ text: `effort ${effort}`, color: 'cyan' }] : []),
+      ...(verify.state === 'pass' ? [{ text: 'verify ✔', color: 'green' }] : verify.state === 'fail' ? [{ text: 'verify ✖', color: 'red' }] : verify.state === 'running' ? [{ text: 'verify …', color: 'yellow' }] : []),
       ...(limits.usd !== undefined ? [{ text: `$${limits.usd.toFixed(2)}`, color: 'white' }] : []),
     ]
     const glance = chips.length ? (
@@ -1527,6 +1816,23 @@ export const register: Register = (on, options) => {
           </Box>
         </Box>
         {glance}
+        {verify.state === 'ask' ? (
+          // the command comes from a project file, so it runs only after the person allows this exact text
+          <Box flexDirection="column">
+            <Text wrap="wrap">
+              Run <Text bold color="yellow">{verify.command}</Text> after code changes?
+            </Text>
+            <Box gap={1}>
+              <Button key="verify-yes" label="Allow" onPress={() => void answerVerify($, verify.command, true)} />
+              <Button key="verify-no" label="Never" onPress={() => void answerVerify($, verify.command, false)} />
+            </Box>
+          </Box>
+        ) : verify.state === 'fail' ? (
+          <Text color="red" wrap="truncate-end">
+            ✖ {verify.command}
+            {verify.note ? <Text dimColor>{`  ${verify.note}`}</Text> : null}
+          </Text>
+        ) : null}
       </Box>
     )
 
@@ -1584,6 +1890,8 @@ export const register: Register = (on, options) => {
         ...ctxLegend,
         field('Cache', cacheText, cacheColor),
         ...(opt('autoEffort', 1) > 0 ? [field('Effort', effort ? `${effort} for this request` : 'your own level', effort ? 'cyan' : undefined)] : []),
+        // turns and mean output tokens per level today: a cheap level that ran long was a wrong pick
+        ...(L.effortLine(effortStats) ? [field('Today', L.effortLine(effortStats))] : []),
       ],
       limits.usd !== undefined ? `session $${limits.usd.toFixed(2)}` : undefined,
       'USAGE',

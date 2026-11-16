@@ -36,6 +36,13 @@ It is my one-shot attempt to put most of what I know about saving tokens and cos
 - **Effort routing.** The planner also says how hard each request needs the model to think, and the deck sends that level with the turn: a rename runs at low, a hard bug at your own level. Nothing is added to the prompt and no skill is loaded. Some models pay for their whole cache again when the level changes: the deck watches the requests it sends at a changed level, and after two that were paid for again it leaves that model family alone. Until a family is proven, the level only changes while the context is under 80k tokens, so finding out has a bounded cost.
 - **Caveman mode.** Short, blunt replies to save output tokens, on in every chat. The rules are part of the deck, so no skill has to be installed or loaded; every typed message carries a one-line reminder (about 20 tokens), because a rule that sits once in the system prompt fades in a long chat. Saying "normal mode" turns it off for the chat.
 - **Graft first.** In a repo Graft has indexed, the deck tells the model to search with Graft, counts Graft's CLI answers as well as its MCP ones, never moves it behind tool search, and adds one short reminder after a plain grep in a turn where Graft sat unused.
+- **Verify gate.** Put your test or build command in `.claude/deck/verify.txt` (or run `/command-deck verify <command>`). After every turn that changes files the deck runs it in the background. A pass costs no tokens; a failure goes back to the model with the end of the output, twice at most per message, so "done" means passing. A command that came from a project file is never run until you allow that exact text in the pane.
+- **Fresh-eyes review.** A plan that is big (5 steps or more), hard (an Opus step) or touches something costly to get wrong (auth, deletes, migrations, payments) gets a step where a Sonnet subagent with no history reads only the diff and hunts bugs.
+- **Rules at edit time.** The first edit of a file type gives the model that type's rules once, plan or no plan: your own `.claude/deck/rules-<ext>.md` (for example `rules-ts.md`), and the Unity rules for a script in a Unity project.
+- **Guards.** `.claude/deck/guards.md` holds one `pattern => reason` per line, for example `git push*--force => Ask first`. The pattern is plain text, with `*` for anything in between, matched without case (never a regular expression). A shell command it matches is refused, and the model reads the reason. A guard can only refuse.
+- **Stuck detector.** The same call failing the same way three times in a row earns one line telling the model to stop and change approach.
+- **Project notes in every chat.** A new chat starts with the newest lasting facts and `.claude/deck/conventions.md` (`/command-deck conventions` has the model scan the project and write it).
+- **Unity.** The Unity rules are a core plus topic packs (UI, performance, tweens, hierarchy, game doc) picked by the words of the step, so a small fix pays for about half of them. A subagent that touches C# gets them in its own prompt from the deck, not pasted by the main chat. With the Unity MCP connected, a C# edit is refused while the editor is in Play mode, compile errors after C# edits go back to the model, and a C# plan's smoke card asks for a clean compile and passing EditMode tests.
 - **Project memory.** Each handoff also gathers up to three lasting facts (a command that works, a trap, a decision) into `.claude/deck/memory.md`, and every later handoff carries them.
 - **Handoff memory.** Writes a handoff note and starts a fresh chat at a context % you choose, or on a new topic.
 - **Cache guard and keep-warm.** Warns before an expensive cold-cache rewrite and can ping to keep the cache warm.
@@ -108,6 +115,8 @@ After any install, run `/reload-plugins` (or start a new chat). The pane opens b
 | `/command-deck-plan <what you want>` | Sharpen a request, ask what is unclear, split it into tasks per model |
 | `/command-deck run` | Run the open tasks, each on its own model |
 | `/command-deck fresh` | Handoff, then a new chat |
+| `/command-deck verify [command]` | Set the verify command (and allow it) · with no command, run the check now |
+| `/command-deck conventions` | Have the model scan the project and write `.claude/deck/conventions.md` |
 | `/command-deck handoff` · `compact` | Write a handoff note · compact the chat |
 | `/command-deck done N` · `clear` | Mark task N done · clear the board |
 | `/command-deck warm [on\|off] [hours]` | Keep the prompt cache warm |
@@ -146,6 +155,10 @@ Change a value in any of these ways:
 | `caveman` | 1 | Short blunt replies in every chat. 0 is off. |
 | `autoEffort` | 1 | Effort routing: 0 off, 1 only lowers (never above your own `/effort` level), 2 may also raise. |
 | `contextBreakdown` | 0 | 1 splits the Context bar by what fills it and lists the parts. |
+| `verifyGate` | 1 | Run the project's check after a turn that changes files. 0 is off. |
+| `freshReview` | 1 | Add the fresh-eyes review step to risky plans. 0 is off. |
+| `briefReports` | 1 | Ask every subagent for a tight final report. 0 is off. |
+| `unityPlayGuard` | 1 | Refuse a C# edit while the Unity editor is in Play mode. 0 is off. |
 | `saveModePct` | 80 | Past this percent of the 5-hour or weekly limit, effort routing sends nothing above medium. 0 is off. |
 | `reducedMotion` | 0 | 1 holds the Doing-card bots still (terminals have no reduced-motion setting). |
 | `coldGuard` | 1 | 0 off, 1 warn, 2 also hold the first send. |
@@ -180,7 +193,7 @@ claude plugin validate .
 
 ## Files it writes
 
-Only under `.claude/deck/` in your project: `rules.md` (your rules for new chats, edit freely), `memory.md` (lasting facts gathered at handoffs, edit freely), handoffs, progress notes and `rules-log.md`. Nothing leaves your machine except the model calls Claude Code already makes.
+Only under `.claude/deck/` in your project: `rules.md` (your rules for new chats, edit freely), `memory.md` (lasting facts gathered at handoffs, edit freely), `verify.txt` (only when you run `/command-deck verify <command>`), handoffs, progress notes and `rules-log.md`. It reads, and never writes, `guards.md`, `conventions.md` and `rules-<ext>.md` there. Nothing leaves your machine except the model calls Claude Code already makes.
 
 ## Optional tools
 
@@ -193,13 +206,16 @@ The board follows the chat's own task list: new tasks from `TodoWrite` or `TaskC
 Command Deck is a mod, so it uses powers a plain skill does not. Each one, and why:
 
 - **Writes files.** Only under `.claude/deck/` in the project (rules, memory, handoffs, progress notes, history, tip files). The paths are fixed text in `hooks/register.tsx`. It never edits build, start-up, settings or instruction files.
-- **Starts programs.** `git` (status and refs for the git panel), `rtk` (`gain` and `verify`, only to show the RTK savings row; absent means the row says Not Installed), and `open` / `xdg-open` / `explorer` to show the `.claude/deck/` folder. Each command is fixed text; nothing from the chat is run as a command.
+- **Starts programs.** Your verify command, through `/bin/sh -c`, after a turn that changed files: only the first line of `.claude/deck/verify.txt`, and only once you allowed that exact text for that project (the allowance is kept outside the repo, so a cloned project cannot run anything). `git` (status and refs for the git panel), `rtk` (`gain` and `verify`, only to show the RTK savings row; absent means the row says Not Installed), and `open` / `xdg-open` / `explorer` to show the `.claude/deck/` folder. Apart from the verify command, each command is fixed text; nothing from the chat is run as a command.
 - **Reads the conversation, sends nothing out.** It reads chat and usage data to fill the board and savings. It sends no data to any server of its own; the only model calls are the ones Claude Code makes (including the Haiku agents below).
 - **Starts agents.** The planner and the board judge run as Haiku agents. They get the user's request, up to `plannerChatMessages` recent messages (each cut to `plannerChatChars` characters) and the task titles.
-- **Submits prompts.** The plan, a handoff and a new-topic message are submitted into the chat as the user's own prompt, so the user sees them. Nothing is hidden.
+- **Submits prompts.** The plan, a handoff, a new-topic message and a failed verify check are submitted into the chat as the user's own prompt, so the user sees them. Nothing is hidden.
 - **Runs `/clear`.** Fresh chat and the new-topic move write a handoff file first and then clear the chat. The new-topic move can be turned off in the plugin options (`autoFresh`); the threshold is `autoFreshPct`.
 - **Changes the turn's effort.** With `autoEffort` on, the `turn.step` hook sends the main chat's requests at the level the planner picked (never above your own level unless `autoEffort` is 2). It never changes the main chat's model.
 - **Adds a reminder after a tool result.** In a Graft-indexed repo, at most one line per turn and three per chat, after a plain grep.
+- **Refuses tool calls.** A shell command matching a line of the project's `guards.md`, and a C# edit while the Unity editor plays. Nothing else is refused.
+- **Calls tools itself.** Two read-only tools of the Unity MCP (`unity_editor_state`, `unity_get_compilation_errors`), only in a Unity project, to check Play mode and compile errors.
+- **Rewrites subagent prompts.** It appends a line asking for a tight report, and the Unity rules for a subagent that touches C#. Forks, teammates and workflow agents are left as written.
 - **Changes agent model.** The `agent.spawn` hook sets `model: haiku` on Explore agents and on agents for a Haiku-tier board card. It does not change permission modes, and it passes every other event on unchanged.
 - **Credentials.** It reads no keys or tokens. The only local reads are the project's `.claude/deck/` files and the tool output above.
 - **Install help.** The Install buttons in the savings pane only submit a prompt that names each tool, its source link and its steps. They run nothing themselves.

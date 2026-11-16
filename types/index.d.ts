@@ -94,6 +94,8 @@ declare module 'claude-code' {
       order: string[] | null
       history: Hist[]
       arrange: boolean
+      verify: { state: 'idle' | 'ask' | 'running' | 'pass' | 'fail'; command: string; note?: string }
+      effortStats: Record<string, { turns: number; out: number; flailed: number }>
       effort: string
       rtk: { state: 'active' | 'inactive' | 'missing'; saved: number } | null
     }
