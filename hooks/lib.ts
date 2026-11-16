@@ -174,9 +174,9 @@ export const METER_COLORS: Record<string, string> = {
   Other: '#9ca3af',
 }
 
-/** Cells for a bar with `columns` of room: one per column in a terminal; elsewhere a block glyph is about 1.6 columns wide. 6 to 60. */
+/** Cells for a bar with `columns` of room: one per column in a terminal; elsewhere a block glyph is about 1.5 columns wide (measured in the desktop app: 1.47). 6 to 60. */
 export function cellCount(columns: number, isTerminal: boolean): number {
-  const n = Math.floor((Number.isFinite(columns) ? columns : 0) / (isTerminal ? 1 : 1.6))
+  const n = Math.floor((Number.isFinite(columns) ? columns : 0) / (isTerminal ? 1 : 1.5))
   return Math.max(6, Math.min(60, n))
 }
 
@@ -225,9 +225,14 @@ export function boardProgress(tasks: Task[]): { done: number; total: number; rat
   return { done, total: list.length, ratio: list.length ? (done + doing / 2) / list.length : 0 }
 }
 
-export type BoardSlice = { card: number; status: Status }
-/** One equal stretch of the bar per counted card, in board order; `card` is its index in `tasks` (its color). */
-export const boardSlices = (tasks: Task[]): BoardSlice[] => counted(tasks).map(x => ({ card: x.i, status: x.t.status }))
+export type BoardSlice = { card: number; status: Status; cells: number }
+/** One stretch of the bar per counted card, in board order; `card` is its index in `tasks` (its color). The cells add up to `cells`: every cell of the bar is used, so no room is left to spread out as gaps. */
+export function boardSlices(tasks: Task[], cells: number): BoardSlice[] {
+  const list = counted(tasks)
+  const n = Number.isFinite(cells) ? Math.max(0, Math.floor(cells)) : 0
+  const edge = (k: number) => Math.round((k / list.length) * n)
+  return list.map((x, k) => ({ card: x.i, status: x.t.status, cells: edge(k + 1) - edge(k) }))
+}
 
 /**
  * Lit cells of a running stretch on this frame. A two-cell highlight sweeps across the stretch, then rests for two

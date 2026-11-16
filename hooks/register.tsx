@@ -1458,9 +1458,9 @@ export const register: Register = (on, options) => {
 
     // ---------------- board progress: one equal stretch per card, in the card's colour (equal growth from zero width)
     const inkOf = (i: number, status: Task['status']) => (status === 'failed' ? L.FAILED_COLOR : status === 'todo' ? undefined : L.cardColor(i))
-    const slices = L.boardSlices(tasks)
-    // the board row's fixed parts: frame and padding 4, percent and its gap 5; every card gets the same number of cells
-    const perCard = Math.max(1, Math.floor(L.cellCount(cols - 9, isTerminal) / Math.max(1, slices.length)))
+    // the board row's fixed parts: frame and padding 4, percent and its gap 5. Every cell that fits is shared out among
+    // the cards, and a card's group grows by its cell count, so all cells are one width and none is left as a gap
+    const slices = L.boardSlices(tasks, L.cellCount(cols - 9, isTerminal)).filter(x => x.cells > 0)
     const progressBar = (
       <Box key="board-bar" gap={1}>
         <Box width={0} flexGrow={1} overflow="hidden">
@@ -1469,8 +1469,9 @@ export const register: Register = (on, options) => {
               `slice-${x.card}`,
               x.status === 'doing'
                 ? // the running stretch shimmers: a lit part sweeps across it, one cell per frame
-                  L.shimmerMask(perCard, frame, isStill).map(lit => ({ color: inkOf(x.card, x.status), isDim: !lit }))
-                : Array.from({ length: perCard }, () => ({ color: inkOf(x.card, x.status) })),
+                  L.shimmerMask(x.cells, frame, isStill).map(lit => ({ color: inkOf(x.card, x.status), isDim: !lit }))
+                : Array.from({ length: x.cells }, () => ({ color: inkOf(x.card, x.status) })),
+              x.cells,
             ),
           )}
         </Box>

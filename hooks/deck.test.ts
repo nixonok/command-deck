@@ -64,7 +64,7 @@ test('bars: a level picks green, yellow or red; every meter has its own colour; 
   expect(L.barCells([{ pct: 50, color: 'a' }], 0)).toEqual([])
   // how many cells: one per column in a terminal, fewer where a block glyph is wider than a column, within sane bounds
   expect(L.cellCount(40, true)).toBe(40)
-  expect(L.cellCount(40, false)).toBe(25)
+  expect(L.cellCount(40, false)).toBe(26)
   expect(L.cellCount(2, true)).toBe(6)
   expect(L.cellCount(999, true)).toBe(60)
   expect(L.cellCount(Number.NaN, false)).toBe(6)
@@ -484,14 +484,13 @@ test('board follows the chat: TodoWrite completes a plan card and adds a new one
   const cells = cellsOf(bar)
   expect(cells.length).toBeGreaterThanOrEqual(4)
   expect(cells.every(c => c.props.width === 0 && c.props.flexGrow === 1 && c.props.height === undefined && textOf(c) === '█')).toBe(true)
-  // done, todo, doing, done: each card owns an equal group of cells in its own colour; todo cells are the empty grey
-  const groups = (bar.children as any[]).map(g => ({ grow: g.props.flexGrow, colors: [...new Set((g.children as any[]).map(c => c.children[0].props.color))] }))
-  expect(groups).toEqual([
-    { grow: 1, colors: [L.cardColor(0)] },
-    { grow: 1, colors: ['gray'] },
-    { grow: 1, colors: [L.cardColor(2)] },
-    { grow: 1, colors: [L.cardColor(3)] },
-  ])
+  // done, todo, doing, done: each card owns a group of cells in its own colour; todo cells are the empty grey.
+  // Every cell that fits the pane is used (none left to spread out as gaps), and a group grows by its cell count,
+  // so all cells are one width
+  const groups = (bar.children as any[]).map(g => ({ grow: g.props.flexGrow, cells: g.children.length, colors: [...new Set((g.children as any[]).map(c => c.children[0].props.color))] }))
+  expect(groups.map(g => g.colors)).toEqual([[L.cardColor(0)], ['gray'], [L.cardColor(2)], [L.cardColor(3)]])
+  expect(groups.every(g => g.grow === g.cells)).toBe(true)
+  expect(cells.length).toBe(L.cellCount(60 - 9, true))
   // a meter is one row of cells too: the fill in the meter's own colour, then the empty rest
   await $.turn.complete({ answer: '', usage: { model: 'claude-fable-5-2', input_tokens: 300, output_tokens: 0 } } as any)
   await $.turn.complete({ answer: '', usage: { model: 'claude-sonnet-5-5', input_tokens: 100, output_tokens: 0 } } as any)
@@ -732,10 +731,13 @@ test('board progress: one colored stretch per card, skipped cards leave the coun
   const board = [mk('done', 1), mk('doing', 2), mk('todo', 3), mk('skipped', 4), mk('failed', 5)]
   expect(L.boardProgress(board)).toEqual({ done: 1, total: 4, ratio: 0.375 })
   // the skipped card has no stretch; each stretch keeps its card's place on the board, so row and bar share a color
-  expect(L.boardSlices(board).map(x => [x.card, x.status])).toEqual([[0, 'done'], [1, 'doing'], [2, 'todo'], [4, 'failed']])
+  expect(L.boardSlices(board, 30).map(x => [x.card, x.status])).toEqual([[0, 'done'], [1, 'doing'], [2, 'todo'], [4, 'failed']])
+  // the cells always add up to the bar: a floor per card would leave cells unused, and the layout spreads those out as gaps
+  for (const w of [0, 1, 3, 7, 17, 30, 31]) expect(L.boardSlices(board, w).reduce((n, x) => n + x.cells, 0)).toBe(w)
+  expect(L.boardSlices(board, Number.NaN).every(x => x.cells === 0)).toBe(true)
   // empty and all-skipped boards: no stretches, 0%, never NaN
   expect(L.boardProgress([])).toEqual({ done: 0, total: 0, ratio: 0 })
-  expect(L.boardSlices([])).toEqual([])
+  expect(L.boardSlices([], 20)).toEqual([])
   expect(L.boardProgress([mk('skipped', 1)]).ratio).toBe(0)
   expect(L.boardProgress([mk('done', 1), mk('done', 2)]).ratio).toBe(1)
   // eight card colors, then they repeat; the percent runs red to amber to green and clamps
