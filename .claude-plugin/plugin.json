@@ -1,8 +1,8 @@
 {
   "name": "command-deck",
-  "version": "1.4.9",
+  "version": "1.5.0",
   "icon": "./.claude-plugin/icon.png",
-  "description": "Plan with the right model per task, kanban board, usage and git panel, caveman mode, handoff memory.",
+  "description": "Plan with the right model and effort per task, kanban board, usage and git panel, caveman mode, handoff and project memory.",
   "types": "./types/index.d.ts",
   "userConfig": {
     "reducedMotion": {
@@ -16,6 +16,24 @@
       "title": "Auto-start the deck in every new chat (1 on, 0 off)",
       "description": "When on, each new chat opens the Command Deck pane. When off, open it yourself with /command-deck.",
       "default": 1
+    },
+    "caveman": {
+      "type": "number",
+      "title": "Caveman replies (1 on, 0 off)",
+      "description": "Short blunt replies in every chat. The rules are part of the deck, so no skill has to be installed or loaded.",
+      "default": 1
+    },
+    "autoEffort": {
+      "type": "number",
+      "title": "Effort routing (0 off, 1 lower only, 2 lower and raise)",
+      "description": "The planner says how hard each request needs the model to think and the deck sends that level with the turn. 1 never goes above your own /effort level; 2 may. Say 'effort: high' in a message to pick the level yourself.",
+      "default": 1
+    },
+    "saveModePct": {
+      "type": "number",
+      "title": "Save mode at usage limit %",
+      "description": "When the 5-hour or weekly limit passes this percent, effort routing sends nothing above medium. 0 turns it off.",
+      "default": 80
     },
     "autoCompactPct": {
       "type": "number",

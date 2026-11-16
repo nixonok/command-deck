@@ -33,7 +33,7 @@ export function asTier(value: unknown, title: string): Tier {
 
 export const PLANNER_SYSTEM = `You turn a developer's rough request into a precise brief and a task list.
 Return ONLY one JSON object, no prose, no code fence:
-{"isClear":boolean,"questions":string[],"prompt":string,"code":boolean,"csharp":boolean,"tasks":[{"title":string,"tier":"haiku"|"sonnet"|"opus","why":string,"parallel":boolean}]}
+{"isClear":boolean,"questions":string[],"prompt":string,"code":boolean,"csharp":boolean,"effort":"low"|"medium"|"high"|"xhigh","tasks":[{"title":string,"tier":"haiku"|"sonnet"|"opus","why":string,"parallel":boolean}]}
 Rules:
 - A question (why, what, how, which is best, explain, compare, advice) is answered in chat, never built: code=false and exactly one task, "Answer in chat" on sonnet. Do not turn a question into build steps.
 - A request that points back at the chat ("fix it", "do that", "the fixes above", "fix the X") means the work the last Assistant message proposed or named; plan exactly that. If the cut chat lines do not show what it means, keep the person's own words in "prompt" and plan one sonnet step; never invent a different task.
@@ -50,6 +50,7 @@ Rules:
 - "why" is 6 words or fewer.
 - code=true when any step changes code, tests, scenes, assets or build config; false when the work is only writing, research or an answer in chat.
 - csharp=true only when a step writes or edits a C# (.cs) file; false for every other kind of work, even inside a game project.
+- effort: how hard the main model must think for the whole request, judged by scope, not topic. low = an answer or a pick that needs no tools and no planning. medium = one known place, cause known. high = several files, an unknown cause, or a review of much code. xhigh = architecture, concurrency, security, a migration, or a retry after a failed attempt. A "yes" or "option B" that starts a build is judged as that build.
 - parallel=true only when the task edits different files from the tasks next to it and needs nothing they produce; those run at the same time. Split mechanical edits per file so they can run in parallel on Haiku.`
 
 export function plannerPrompt(ask: string, answers: string[], questions: string[] = [], recent: string[] = [], media = 0): string {
@@ -94,7 +95,7 @@ export function parsePlan(raw: string): Plan | null {
         .slice(0, 8)
     : []
   const isClear = data.isClear !== false && questions.length === 0 && tasks.length > 0
-  return { isClear, questions, prompt: String(data.prompt ?? '').trim(), code: data.code !== false, csharp: typeof data.csharp === 'boolean' ? data.csharp : undefined, tasks }
+  return { isClear, questions, prompt: String(data.prompt ?? '').trim(), code: data.code !== false, csharp: typeof data.csharp === 'boolean' ? data.csharp : undefined, effort: asEffort(data.effort), tasks }
 }
 
 export function taskPrompt(goalPrompt: string, task: Task, done: Task[]): string {
@@ -116,25 +117,6 @@ export function nextWave(tasks: Task[], max = 4): Task[] {
     wave.push(t)
   }
   return wave
-}
-
-/** Greedy word wrap, so a drawn line never runs past the box it sits in. */
-export function wrapWords(text: string, width: number): string[][] {
-  const lines: string[][] = []
-  let line: string[] = []
-  let len = 0
-  for (const w of text.split(/\s+/).filter(Boolean)) {
-    const add = (line.length ? 1 : 0) + w.length
-    if (line.length && len + add > width) {
-      lines.push(line)
-      line = []
-      len = 0
-    }
-    line.push(w)
-    len += (line.length > 1 ? 1 : 0) + w.length
-  }
-  if (line.length) lines.push(line)
-  return lines
 }
 
 // ---------------------------------------------------------------- usage and bars
@@ -169,14 +151,24 @@ export function shares(map: Record<string, number>): { name: ModelBucket; pct: n
     .map(name => ({ name, tokens: map[name] ?? 0, pct: total ? ((map[name] ?? 0) / total) * 100 : 0 }))
 }
 
-export function bar(pct: number, width: number): { full: string; empty: string } {
-  const clamped = Math.max(0, Math.min(100, Number.isFinite(pct) ? pct : 0))
-  const filled = Math.round((clamped / 100) * width)
-  return { full: '█'.repeat(filled), empty: '░'.repeat(Math.max(0, width - filled)) }
-}
-
 export function barColor(pct: number): string {
   return pct >= 85 ? 'red' : pct >= 60 ? 'yellow' : 'green'
+}
+
+// Bars are Boxes with a background, sized by the layout, so they span their room at any pane width and in any font.
+// A background takes a hex colour on every surface; the named colours are for text.
+const FILLS: Record<string, string> = { green: '#22c55e', yellow: '#eab308', red: '#ef4444', cyan: '#06b6d4', magenta: '#d946ef', blue: '#3b82f6', white: '#e5e7eb', gray: '#6b7280' }
+export const fillOf = (color: string): string => (color.startsWith('#') ? color : (FILLS[color] ?? FILLS.gray!))
+// the unfilled part of a bar: the engine's own Progress draws its track with this theme key
+export const TRACK = 'userMessageBackground'
+
+/** A hex colour scaled toward black: 1 leaves it, 0 is black. Anything that is not #rrggbb comes back unchanged. */
+export function shade(hex: string, k: number): string {
+  const m = /^#([0-9a-f]{6})$/i.exec(hex)
+  if (!m) return hex
+  const f = Math.min(1, Math.max(0, Number.isFinite(k) ? k : 1))
+  const n = Number.parseInt(m[1]!, 16)
+  return `#${[n >> 16, (n >> 8) & 255, n & 255].map(c => Math.round(c * f).toString(16).padStart(2, '0')).join('')}`
 }
 
 // one little bot per model tier so a glance tells who is working: Haiku hums, Sonnet sparkles, Opus powers up. Each blinks
@@ -213,14 +205,9 @@ export function boardProgress(tasks: Task[]): { done: number; total: number; rat
   return { done, total: list.length, ratio: list.length ? (done + doing / 2) / list.length : 0 }
 }
 
-export type BoardSlice = { card: number; status: Status; cells: number }
-/** One stretch of the bar per counted card, in board order; `card` is its index in `tasks` (its color). Cells add up to `width`. */
-export function boardSlices(tasks: Task[], width: number): BoardSlice[] {
-  const list = counted(tasks)
-  const w = Number.isFinite(width) ? Math.max(0, Math.floor(width)) : 0
-  const edge = (n: number) => Math.round((n / list.length) * w)
-  return list.map((x, n) => ({ card: x.i, status: x.t.status, cells: edge(n + 1) - edge(n) }))
-}
+export type BoardSlice = { card: number; status: Status }
+/** One equal stretch of the bar per counted card, in board order; `card` is its index in `tasks` (its color). */
+export const boardSlices = (tasks: Task[]): BoardSlice[] => counted(tasks).map(x => ({ card: x.i, status: x.t.status }))
 
 /**
  * Lit cells of a running stretch on this frame. A two-cell highlight sweeps across the stretch, then rests for two
@@ -447,11 +434,161 @@ export function planContext(plan: Plan, opts: { unity?: boolean } = {}): string 
   ].join('\n')
 }
 
-export const HOUSE_SECTION = `Command Deck is active. Keep the main context small: send read-heavy exploration to an Explore subagent (it runs on Haiku), give precise mechanical edits to Haiku subagents (several at once when they touch different files), run long builds, tests and checks in the background, and keep replies short. Keep the board true: every subagent becomes a card named by its description, so give each a clear one. New work you plan and work you finish yourself goes on the board through TodoWrite or TaskCreate/TaskUpdate; if you have none of those tools, end the reply with a line "Todo: <title>" for each new task, "Done: <title>" for each task verified done and "Skip: <title>" for each task dropped on purpose, so no card stays in Todo once nothing will work on it.`
+export const HOUSE_SECTION = `Command Deck is active. Keep the main context small: send read-heavy exploration to an Explore subagent (it runs on Haiku), give precise mechanical edits to Haiku subagents (several at once when they touch different files), run long builds, tests and checks in the background, and keep replies short. Wait for every background subagent before the final answer; never redo work one was given. Keep the board true: every subagent becomes a card named by its description, so give each a clear one. New work you plan and work you finish yourself goes on the board through TodoWrite or TaskCreate/TaskUpdate; if you have none of those tools, end the reply with a line "Todo: <title>" for each new task, "Done: <title>" for each task verified done and "Skip: <title>" for each task dropped on purpose, so no card stays in Todo once nothing will work on it.`
+
+// rides only in a repo graft has indexed; fixed for the whole chat, so the cached system prompt never changes
+export const GRAFT_LINE = 'Code search in this repo: graft first (`graft ask "<task>" --source` for how or where, `graft grep "<literal>"` for every hit, `graft callers <symbol>` before changing a symbol). Plain grep only for text graft does not index.'
+
+export const houseSection = (o: { graft?: boolean } = {}): string => (o.graft ? `${HOUSE_SECTION}\n${GRAFT_LINE}` : HOUSE_SECTION)
+
+// said once after a plain text search while graft sat unused: the reminder costs tokens only when graft was skipped
+export const GRAFT_NUDGE = 'Graft indexes this repo. For the next code search use `graft ask "<task>" --source` or `graft grep "<literal>"`: exact file:line for fewer tokens than grep.'
+export const GRAFT_NUDGE_MAX = 3
+
+/** A graft CLI question run through Bash; its answer opens with the same "tokens saved" line as the MCP tools. */
+export const isGraftCli = (command: unknown): boolean => /\bgraft\s+(ask|grep|skeleton|callers|map)\b/.test(String(command ?? ''))
+
+/** A text search as the command's own job: the Grep tool, or grep/rg leading a Bash command. A `| grep` filter on other output is not one. */
+export const isTextSearch = (tool: string, command?: unknown): boolean =>
+  tool === 'Grep' || (tool === 'Bash' && /(^|&&|;)\s*(rtk\s+)?(grep|rg|ag|ack)\s/.test(String(command ?? '')))
 
 // ---------------------------------------------------------------- caveman
 
-export const CAVEMAN_SECTION = `Caveman mode is ON: Command Deck keeps it on in every chat. Before your first reply, load the caveman:caveman skill with the Skill tool if it is not loaded yet, then follow it for every reply. Short, blunt sentences in every reply, including the first. If that skill is not installed: short sentences, small words, no filler, code and names unchanged.`
+// The rules are written out here, not left to a skill: a skill has to be installed, listed and loaded with a tool call,
+// and each of those failed in some chats. Inline text is in every chat from the first reply and costs no round trip.
+export const CAVEMAN_SECTION = `Caveman mode is ON: Command Deck keeps it on in every chat. Every reply, the first included: short blunt sentences, small words, no filler, no praise, no preamble, no recap of the request. Drop articles where it still reads smooth. Three bullets at most per list. Code, commands, paths, numbers, error text and names stay exact. "stop caveman" or "normal mode" from the person turns it off.`
+
+// the section promises these words turn it off, so the deck stops reminding and counting for the rest of the chat
+export const CAVEMAN_OFF = /\b(stop caveman|normal mode)\b/i
+
+// rides with the next message only after a reply slid back into long sentences
+export const CAVEMAN_REMINDER = 'Caveman mode is still on: short blunt sentences, small words, no filler.'
+
+/**
+ * True when a reply slid out of caveman style: its prose averages long sentences. Contract: code fences, inline code,
+ * table rows and board lines are not prose; a reply under `minWords` of prose is never drift (too little to judge).
+ */
+export function cavemanDrift(answer: unknown, maxWords = 16, minWords = 60): boolean {
+  const prose = String(answer ?? '')
+    .replace(/```[\s\S]*?```/g, ' ')
+    .replace(/`[^`\n]*`/g, ' x ')
+    .split('\n')
+    .filter(l => !/^\s*(\||(todo|done|skip|skipped):)/i.test(l))
+    .join('\n')
+  const sentences = prose
+    .split(/(?<=[.!?:;])\s+|\n+/)
+    .map(x => x.split(/\s+/).filter(w => /[a-z0-9]/i.test(w)).length)
+    .filter(n => n > 0)
+  const words = sentences.reduce((a, b) => a + b, 0)
+  return words >= minWords && words / sentences.length > maxWords
+}
+
+// ---------------------------------------------------------------- effort routing
+// The planner's Haiku pass already reads every real request, so it also says how hard the main model must think; the
+// level is sent with the turn's own requests (turn.step). Nothing is added to the prompt and no skill is loaded.
+
+export type Effort = 'low' | 'medium' | 'high' | 'xhigh' | 'max'
+export const EFFORTS: Effort[] = ['low', 'medium', 'high', 'xhigh', 'max']
+export const asEffort = (v: unknown): Effort | undefined => EFFORTS.find(x => x === String(v ?? '').toLowerCase())
+const rank = (e: Effort): number => EFFORTS.indexOf(e)
+
+/** A level the person named in the message ("effort: low", "max effort"): it is used as named. */
+export function namedEffort(text: string): Effort | undefined {
+  const m = /\b(?:effort\s*[:=]?\s*(low|medium|high|xhigh|max)|(low|medium|high|xhigh|max)\s+effort)\b/i.exec(text)
+  return m ? asEffort(m[1] ?? m[2]) : undefined
+}
+
+/**
+ * The level a turn is sent with, or undefined to leave the request alone. Contract: nothing without a session level (a
+ * model with no effort, or auto); a named level wins; mode 1 never goes above the session's level, mode 2 may; while
+ * saving (a usage limit nearly spent) nothing goes above medium; a result equal to the session's level is undefined.
+ */
+export function routedEffort(a: { want?: Effort; named?: Effort; session?: unknown; mode: number; isSaving?: boolean }): Effort | undefined {
+  const session = asEffort(a.session)
+  if (a.mode <= 0 || !session) return undefined
+  let out = a.named ?? a.want ?? session
+  if (!a.named && a.mode === 1 && rank(out) > rank(session)) out = session
+  if (!a.named && a.isSaving && rank(out) > rank('medium')) out = 'medium'
+  return out === session ? undefined : out
+}
+
+// Some models cannot take a new effort level without writing the whole prefix to the cache again. The deck cannot ask
+// which, so it watches the first request it sends at a changed level. Until a model family is proven, the level changes
+// only while the context is under EFFORT_PROBE_MAX, so finding out costs one bounded cache write, once per family.
+// One bad reading is only a suspicion (a compaction or a lapsed entry reads the same); a second one settles it.
+export type EffortTrust = 'ok' | 'suspect' | 'bad' | undefined
+export const EFFORT_PROBE_MAX = 80_000
+export const mayRouteEffort = (trust: EffortTrust, ctxTokens: number): boolean => trust === 'ok' || (trust !== 'bad' && ctxTokens < EFFORT_PROBE_MAX)
+export const nextTrust = (prev: EffortTrust, verdict: 'ok' | 'bad' | undefined): EffortTrust =>
+  verdict === 'ok' ? 'ok' : verdict === 'bad' ? (prev === 'suspect' || prev === 'bad' ? 'bad' : 'suspect') : prev
+
+/**
+ * The level one main request goes out at. `routed` is routedEffort's answer (undefined = the session's own level),
+ * `prev` what this model family was last sent and the session level it had then. Contract: a proven family, or an
+ * unproven one in a small chat, gets the routed level; a refuted one the session's; an unproven one in a big chat
+ * keeps the level it had, since a change there is the very cost the probe limit bounds, unless the person changed
+ * their own level meanwhile, which is theirs to pay for.
+ */
+export function stepEffort(a: { routed?: Effort; session?: string; trust: EffortTrust; ctxTokens: number; prev?: { sent?: string; session?: string } }): string | undefined {
+  if (mayRouteEffort(a.trust, a.ctxTokens)) return a.routed ?? a.session
+  if (a.trust !== 'bad' && a.prev && a.prev.session === a.session) return a.prev.sent
+  return a.session
+}
+
+/**
+ * What a request sent at a changed level proves. `bad`: almost nothing was read from the cache, so the prefix was paid
+ * for again. `ok`: most of it was read. Undefined: a prefix too small to tell, or a share in between (a big new message).
+ */
+export function effortVerdict(u: { cache_read_input_tokens?: number; cache_creation_input_tokens?: number } | null | undefined, minTokens = 20_000): 'ok' | 'bad' | undefined {
+  const read = u?.cache_read_input_tokens ?? 0
+  const total = read + (u?.cache_creation_input_tokens ?? 0)
+  if (total < minTokens) return undefined
+  return read < total * 0.1 ? 'bad' : read > total * 0.5 ? 'ok' : undefined
+}
+
+// ---------------------------------------------------------------- planner gate
+const ASKS = /^(why|what|how|which|when|where|who|is|are|was|were|does|do|did)\b/i
+const BUILDS = /\b(fix|add|make|build|implement|change|update|create|remove|delete|write|refactor|rename|move|run|deploy|install|commit|push|can you|could you|would you|please)\b/i
+
+/** A one-line question with no build word: it is answered in chat, so the planner call (and its wait) is skipped. */
+export function isPlainQuestion(text: string): boolean {
+  const t = text.trim()
+  return t.length < 240 && !t.includes('\n') && t.endsWith('?') && ASKS.test(t) && !BUILDS.test(t)
+}
+
+// ---------------------------------------------------------------- project memory
+const BULLET = /^\s*[-*]\s+(\S.*)$/
+/** Splits a handoff note from the lasting facts listed under it: bullet lines only, up to 3, and "none" in any wording gives none. */
+export function splitFacts(note: string): { note: string; facts: string[] } {
+  const at = note.search(/^#+\s*Lasting facts\b.*$/im)
+  if (at < 0) return { note: note.trim(), facts: [] }
+  const facts = note
+    .slice(at)
+    .split('\n')
+    .slice(1)
+    .flatMap(l => BULLET.exec(l)?.[1]?.trim() ?? [])
+    .filter(f => !/^none\b/i.test(f))
+    .slice(0, 3)
+  return { note: note.slice(0, at).trim(), facts }
+}
+
+const factKey = (s: string): string => s.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()
+/** The memory's bullets, oldest first. */
+export const memoryFacts = (memory: string): string[] => memory.split('\n').flatMap(l => BULLET.exec(l)?.[1]?.trim() ?? [])
+
+export const MEMORY_HEAD = '# Project memory\nLasting facts Command Deck gathers at each handoff. Edit or delete lines freely.\n'
+/**
+ * Project memory with new facts appended as bullets. Contract: a fact already there (case and punctuation ignored) is
+ * not added; past `max` bullets the oldest bullets go; every other line (the person's own notes and headings) stays.
+ */
+export function mergeFacts(memory: string, facts: string[], max = 40): string {
+  const have = memoryFacts(memory)
+  const add = facts.map(f => f.trim()).filter((f, i, all) => f && !have.some(h => factKey(h) === factKey(f)) && all.findIndex(g => factKey(g) === factKey(f)) === i)
+  if (!add.length) return memory
+  const lines = `${(memory.trim() ? memory : MEMORY_HEAD).replace(/\n+$/, '')}\n${add.map(f => `- ${f}`).join('\n')}`.split('\n')
+  for (let over = have.length + add.length - max; over > 0; over--) lines.splice(lines.findIndex(l => BULLET.test(l)), 1)
+  return `${lines.join('\n')}\n`
+}
 
 // ---------------------------------------------------------------- files
 
@@ -541,6 +678,7 @@ export function handoffMarkdown(args: {
   contextPct?: number
   summary?: string
   lastAnswer?: string
+  memory?: string
 }): string {
   const g = args.git
   return [
@@ -556,6 +694,7 @@ export function handoffMarkdown(args: {
     '## Rules',
     args.rules.trim(),
     '',
+    ...(args.memory && memoryFacts(args.memory).length ? ['## Project memory', ...memoryFacts(args.memory).map(f => `- ${f}`), ''] : []),
     '## Repo state',
     g
       ? `Branch ${g.branch}${g.upstream ? ` → ${g.upstream}` : ' (no upstream)'}${g.ahead ? `, ahead ${g.ahead}` : ''}${g.behind ? `, behind ${g.behind}` : ''}; ${g.dirty.length} changed files`
@@ -577,13 +716,14 @@ export const HANDOFF_ASK = `Write a handoff note for a fresh chat that continues
 
 /** The handoff prompt anchored on the current goal and the unfinished board cards, so the note describes this goal
  * (not an older topic from earlier in the chat) and what was mid-way when the chat ended. */
-export function handoffAsk(goal: string, tasks: Pick<Task, 'title' | 'status'>[]): string {
+export function handoffAsk(goal: string, tasks: Pick<Task, 'title' | 'status'>[], known: string[] = []): string {
   const open = tasks.filter(t => t.status !== 'done' && t.status !== 'skipped').map(t => `- ${t.title} (${t.status})`)
   return [
     HANDOFF_ASK,
     goal ? `Current goal: ${goal}` : '',
     open.length ? `Unfinished board tasks. Say which of these this chat really finished and checked, and which was mid-way:\n${open.join('\n')}` : '',
     'Lead with where THIS goal stands and the exact next action.',
+    `After the note add a section "## Lasting facts": up to 3 bullets that stay true after this task and that a new chat could not read from the code (a command that works, a trap, a decision and its reason). One line each. Write "none" when there is nothing new.${known.length ? ` Already known, do not repeat:\n${known.slice(-40).map(k => `- ${k}`).join('\n')}` : ''}`,
   ]
     .filter(Boolean)
     .join('\n\n')
@@ -647,29 +787,13 @@ export const CTX_COLORS = ['cyan', 'magenta', 'yellow', 'green', 'blue', 'red', 
 // readable text on each band colour
 export const ctxInk = (color: string): string => (['blue', 'red', 'magenta'].includes(color) ? 'white' : 'black')
 
-export type Segment = { name: string; tokens: number; pct: number; cells: number; color: string }
+export type Segment = { name: string; tokens: number; pct: number; color: string }
 
-// one coloured run per used category, each at least one cell wide, never wider than the bar
-export function ctxSegments(parts: CtxPart[], window: number, width: number): Segment[] {
+// one coloured run per used category, as its share of the window
+export function ctxSegments(parts: CtxPart[], window: number): Segment[] {
   const used = parts.filter(p => p.kind === 'used' && p.tokens > 0)
   if (!window || !used.length) return []
-  const out = used.map((p, i) => ({
-    name: p.name,
-    tokens: p.tokens,
-    pct: (p.tokens / window) * 100,
-    cells: Math.max(1, Math.round((p.tokens / window) * width)),
-    color: CTX_COLORS[i % CTX_COLORS.length] ?? 'white',
-  }))
-  let over = out.reduce((n, x) => n + x.cells, 0) - width
-  for (let i = out.length - 1; over > 0 && i >= 0; i--) {
-    const seg = out[i]
-    if (seg && seg.cells > 1) {
-      const cut = Math.min(over, seg.cells - 1)
-      seg.cells -= cut
-      over -= cut
-    }
-  }
-  return out
+  return used.map((p, i) => ({ name: p.name, tokens: p.tokens, pct: (p.tokens / window) * 100, color: CTX_COLORS[i % CTX_COLORS.length] ?? 'white' }))
 }
 
 // ------------------------------------------------------------ smart tool deferral
@@ -698,6 +822,9 @@ export function parseNeed(raw: string): string[] | null {
     return null
   }
 }
+
+// the token-saving tools stay in front whatever the chooser says: behind search they are skipped, not used
+export const KEEP_SERVERS = ['graft', 'token_optimizer', 'graphify']
 
 export const serverOfTool = (tool: string): string | null => /^mcp__(.+?)__/.exec(tool)?.[1] ?? null
 

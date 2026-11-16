@@ -30,6 +30,10 @@ const orderA = atom({ plugin: 'command-deck', key: 'order' } as const, null as s
 // Git and History start minimized; the person can open them and the choice is kept
 const minA = atom({ plugin: 'command-deck', key: 'min' } as const, { GIT: true, HISTORY: true } as Record<string, boolean>)
 // History shows the newest 15 entries; true shows every stored entry
+// arrange mode shows the move buttons on every section; off, a section header holds only its fold button
+const arrangeA = atom({ plugin: 'command-deck', key: 'arrange' } as const, false)
+// the effort level the deck is sending this turn's requests with; '' when it leaves the session's own level
+const effortA = atom({ plugin: 'command-deck', key: 'effort' } as const, '')
 const LEARN = 'command-deck-learn'
 const CHOICES = ['Yes', 'No', 'Not sure']
 let fromPanel = false
@@ -55,6 +59,22 @@ let warmUntil = 0
 let isPinging = false
 let isTurnLive = false
 let coldWarned = false
+// graft: the repo has an index (fixed at session start, so the system prompt line never changes mid-chat)
+let hasGraft = false
+let graftUsedTurn = false
+let graftNudgedTurn = false
+let graftNudges = 0
+// effort routing: the planner's level for the current request (kept across short follow-ups), a level the person
+// named, the level of the last main request, and what each model family proved about changing levels
+let turnEffort: L.Effort | undefined
+let namedLevel: L.Effort | undefined
+// per model family: a switch of model starts clean, so the new family's first request is never read as a level change
+let lastStep: Record<string, { sent?: string; session?: string }> = {}
+let effortTrust: Record<string, L.EffortTrust> = {}
+// caveman: the last reply slid into long sentences, so the next message carries a one-line reminder; the person's
+// "normal mode" turns the reminder and the count off for the rest of the chat
+let isDrifting = false
+let isCavemanOff = false
 let spin: { cancel: () => void } | null = null
 const completions = new Map<string, Done>()
 const waiters = new Map<string, (d: Done) => void>()
@@ -98,6 +118,9 @@ async function appendHistoryFile($: any, items: { at: number; title: string; tie
     /* history is a convenience */
   }
 }
+
+// lasting project facts, gathered at each handoff and carried into every later one
+const memoryFile = () => `${DIR}/memory.md`
 
 async function openHistoryFolder($: any) {
   try {
@@ -156,6 +179,11 @@ async function load($: any) {
   } catch {
     /* keep the relative default */
   }
+  hasGraft = await $.fs.exists(`${DIR.replace(/\.claude\/deck$/, '')}graft/INDEX.md`).catch(() => false)
+  effortTrust = ((await $.store.get('deck.effortTrust').catch(() => undefined)) as Record<string, L.EffortTrust> | undefined) ?? {}
+  graftNudges = 0
+  lastStep = {}
+  isCavemanOff = false
   const tasks = ((await $.store.get('deck.tasks')) as Task[] | undefined) ?? []
   const goal = ((await $.store.get('deck.goal')) as string | undefined) ?? ''
   // questions are never carried into a new session: they would cling to the pane and ask what was answered
@@ -336,7 +364,8 @@ async function analyze($: any, ask: string, answers: string[], questions: string
       prompt: L.plannerPrompt(ask, answers, questions, recent, media),
       maxTokens: 1500,
       effort: model === 'haiku' ? 'medium' : 'low',
-      timeoutMs: 60000,
+      // the message waits for this call, so a slow planner is cut short and the message goes out unplanned
+      timeoutMs: model === 'haiku' ? 20000 : 30000,
     })
     if (r.isAnswered) {
       await addUsage($, model, { ...r.usage, model })
@@ -365,7 +394,7 @@ async function judgeBoard($: any, answer: string, open: Task[]): Promise<void> {
     await save($)
     await writeProgress($)
   } catch (err) {
-    console.error('[command-deck] board judge failed:', err)
+    $.ui.log(`[command-deck] board judge failed: ${String((err as Error)?.message ?? err)}`)
   }
 }
 
@@ -497,9 +526,22 @@ async function handoff($: any): Promise<string> {
   const limits = await read($, limitsA)
   // the summary comes from a fork of this very conversation: the prefix is already cached, so it is cheap
   let summary = ''
+  let memory = ''
   try {
-    const r = await $.model.fork({ prompt: L.handoffAsk(await read($, goalA), await read($, tasksA)) })
-    if (r.isAnswered) summary = r.text
+    if (await $.fs.exists(memoryFile())) memory = String(await $.fs.read(memoryFile()))
+  } catch {
+    /* no memory yet */
+  }
+  try {
+    const r = await $.model.fork({ prompt: L.handoffAsk(await read($, goalA), await read($, tasksA), L.memoryFacts(memory)) })
+    if (r.isAnswered) {
+      const split = L.splitFacts(r.text)
+      summary = split.note
+      if (split.facts.length) {
+        memory = L.mergeFacts(memory, split.facts)
+        await $.fs.write(memoryFile(), memory)
+      }
+    }
   } catch {
     /* the note still carries the goal, rules, board and repo state */
   }
@@ -507,6 +549,7 @@ async function handoff($: any): Promise<string> {
     path,
     L.handoffMarkdown({
       summary,
+      memory,
       goal: await read($, goalA),
       tasks: await read($, tasksA),
       rules: await rulesText($),
@@ -549,7 +592,7 @@ async function decideTools($: any, text: string) {
   const needed = new Set(need.map(L.norm))
   const lower = text.toLowerCase()
   const off = servers.filter(
-    sv => !needed.has(L.norm(sv.server)) && !usedServers.has(L.norm(sv.server)) && !lower.includes(sv.server.toLowerCase()) && !lower.includes(L.norm(sv.server).replace(/_/g, ' ')),
+    sv => !L.KEEP_SERVERS.includes(L.norm(sv.server)) && !needed.has(L.norm(sv.server)) && !usedServers.has(L.norm(sv.server)) && !lower.includes(sv.server.toLowerCase()) && !lower.includes(L.norm(sv.server).replace(/_/g, ' ')),
   )
   if (!off.length) return
   deferServers = new Set(off.map(sv => L.norm(sv.server)))
@@ -629,6 +672,11 @@ async function runClean($: any, ask: CleanAsk): Promise<string> {
     await addSaving('fresh', ask.shed, $)
     deferServers = new Set()
     usedServers.clear()
+    graftNudges = 0
+    isDrifting = false
+    isCavemanOff = false
+    turnEffort = undefined
+    lastStep = {}
     await $.prompt.submit({ text: ask.first })
     return `Fresh chat started from ${ask.path}.`
   } catch (err) {
@@ -715,12 +763,25 @@ async function autoPlan($: any, e: any): Promise<string | 'drop' | null> {
   if (!isPanel && !HUMAN.has(String(e.origin?.kind))) return null
   const text = String(e.text ?? '').trim()
   const pending = await read($, pendingA)
-  if (text.startsWith('/')) return null
+  // a slash command is its own work: it runs at the session's level, not the level of the request before it
+  if (text.startsWith('/')) {
+    turnEffort = undefined
+    return null
+  }
+  namedLevel = L.namedEffort(text)
+  if (L.CAVEMAN_OFF.test(text)) isCavemanOff = true
   if (pending && L.GO_WORDS.test(text)) {
     await update($, pendingA, () => null)
     return `The person skipped the questions; go ahead with the original request: ${pending.ask}`
   }
+  // a short follow-up ("yes", "go on") continues the work, so it keeps that work's effort level
   if (!pending && text.length < 30) {
+    remember('User', text)
+    return null
+  }
+  // a plain question is answered in chat: no plan would be attached, so the planner call and its wait are skipped
+  if (!pending && L.isPlainQuestion(text)) {
+    turnEffort = undefined
     remember('User', text)
     return null
   }
@@ -728,6 +789,7 @@ async function autoPlan($: any, e: any): Promise<string | 'drop' | null> {
   const answers = pending ? [...pending.answers, text] : []
   const media = Array.isArray(e.attachments) ? e.attachments.length : 0
   const plan = await analyze($, ask, answers, pending ? pending.questions : [], media)
+  turnEffort = plan?.effort
   if (!plan) {
     await update($, pendingA, () => null)
     await save($)
@@ -810,7 +872,8 @@ export const register: Register = (on, options) => {
     void refreshUsage($)
     void refreshRtk($, true)
     $.clock.every(30_000, () => void refreshGit($))
-    $.clock.every(30_000, () => void refreshRtk($))
+    // RTK's figure moves only when a command ran, so it is read after each turn; this slow tick covers idle changes
+    $.clock.every(120_000, () => void refreshRtk($))
     $.clock.every(60_000, () => void warmTick($))
     await update($, tipA, () => Math.floor(Math.random() * L.TIPS.length))
     $.clock.every(L.TIP_ROTATE_MS, () => void update($, tipA, (n: number) => n + 1))
@@ -906,9 +969,12 @@ export const register: Register = (on, options) => {
   // ------------------------------------------------------------ prompt shaping
   on('prompt.compose', async ($, e, next) => {
     const out = await next(e)
-    const extra: { id: string; text: string; scope: 'session' }[] = []
-    extra.push({ id: 'command-deck:house', text: L.HOUSE_SECTION, scope: 'session' }, { id: 'command-deck:clean-code', text: G.CORE, scope: 'session' }, { id: 'command-deck:caveman', text: L.CAVEMAN_SECTION, scope: 'session' })
-    return extra.length ? { ...out, sections: [...out.sections, ...extra] } : out
+    const extra: { id: string; text: string; scope: 'session' }[] = [
+      { id: 'command-deck:house', text: L.houseSection({ graft: hasGraft }), scope: 'session' },
+      { id: 'command-deck:clean-code', text: G.CORE, scope: 'session' },
+      ...(opt('caveman', 1) > 0 ? [{ id: 'command-deck:caveman', text: L.CAVEMAN_SECTION, scope: 'session' as const }] : []),
+    ]
+    return { ...out, sections: [...out.sections, ...extra] }
   })
 
   on('prompt.submit', async ($, e, next) => {
@@ -972,6 +1038,8 @@ export const register: Register = (on, options) => {
       }
     }
     let planned: string | 'drop' | null = null
+    // a named level belongs to the message that named it
+    namedLevel = undefined
     try {
       planned = await autoPlan($, e)
     } catch {
@@ -979,9 +1047,56 @@ export const register: Register = (on, options) => {
     }
     if (planned === 'drop') return { drop: lastQuestions || 'Command Deck needs more details first. Reply with them, or "go" to skip.' }
     isTurnLive = true
+    graftUsedTurn = false
+    graftNudgedTurn = false
     if (!e.text.startsWith('/')) await decideTools($, e.text).catch(() => undefined)
-    if (planned) return next({ ...e, context: [...(e.context ?? []), planned] })
+    const added = [...(planned ? [planned] : [])]
+    // kept until a typed message can carry it: a prompt the deck or a task sent is not the person's next message
+    if (isDrifting && !isCavemanOff && opt('caveman', 1) > 0 && HUMAN.has(String(e.origin?.kind)) && !e.text.startsWith('/')) {
+      added.push(L.CAVEMAN_REMINDER)
+      isDrifting = false
+    }
+    if (added.length) return next({ ...e, context: [...(e.context ?? []), ...added] })
     return next(e)
+  })
+
+  // Effort routing: the main loop's requests go out at the level the planner picked for this request. Subagents keep
+  // their own level (lowering it cost answers in the effortless benchmark). A model that re-bills the conversation on
+  // a level change is found on the first changed request and left alone from then on.
+  on('turn.step', async function* ($, e, next) {
+    let level: L.Effort | undefined
+    let family = ''
+    let isJudged = false
+    // a failure here must never hold a model request back: the request then goes out as the engine made it
+    try {
+      const mode = opt('autoEffort', 1)
+      if (!(e as { agentId?: string }).agentId && mode > 0) {
+        const limits = await read($, limitsA)
+        family = L.modelBucket(e.model)
+        const savePct = opt('saveModePct', 80)
+        const isSaving = savePct > 0 && Math.max(limits.fiveHour?.pct ?? 0, limits.sevenDay?.pct ?? 0) >= savePct
+        const session = typeof e.effort === 'string' ? e.effort : undefined
+        const routed = L.routedEffort({ want: turnEffort, named: namedLevel, session, mode, isSaving })
+        const prev = lastStep[family]
+        const sending = L.stepEffort({ routed, session, trust: effortTrust[family], ctxTokens: limits.ctxTokens ?? 0, prev })
+        level = sending === session ? undefined : L.asEffort(sending)
+        // judged only on a warm cache: a cold one writes the prefix again whatever the level
+        isJudged = prev !== undefined && prev.sent !== sending && lastTouch > 0 && (await $.clock.now()) - lastTouch < opt('cacheTtlMin', 60) * 60_000
+        lastStep = { ...lastStep, [family]: { sent: sending, session } }
+        if ((await read($, effortA)) !== (level ?? '')) await update($, effortA, () => level ?? '')
+      }
+    } catch {
+      level = undefined
+      isJudged = false
+    }
+    const r = yield* next(level ? { ...e, effort: level } : e)
+    const trust = L.nextTrust(effortTrust[family], isJudged ? L.effortVerdict(r?.usage) : undefined)
+    if (trust !== effortTrust[family]) {
+      effortTrust = { ...effortTrust, [family]: trust }
+      await $.store.set('deck.effortTrust', effortTrust).catch(() => undefined)
+      if (trust === 'bad') $.ui.toast(`Effort routing is off for ${family}: two level changes each made it write the conversation to the cache again.`)
+    }
+    return r
   })
 
   on('agent.spawn', async ($, e, next) => {
@@ -1022,6 +1137,8 @@ export const register: Register = (on, options) => {
 
   on('tool.call', async ($, e, next) => {
     const tool = String(e.tool)
+    // a tool's arguments sit on the event beside `tool` (e.command for Bash), not under an `input` key
+    const args = e as unknown as { todos?: unknown; subject?: unknown; taskId?: unknown; status?: unknown; command?: unknown }
     if (isAutoBoard && !isRunning && !(e as { agentId?: string }).agentId && mainTask === null && agentTask.size === 0 && tool !== 'Agent') {
       mainTask = (await beginTask($, null))?.id ?? null
       if (mainTask !== null) startSpin($)
@@ -1031,11 +1148,10 @@ export const register: Register = (on, options) => {
     let created: string | undefined
     if (tool === 'TodoWrite' || tool === 'TaskCreate' || tool === 'TaskUpdate') {
       try {
-        const input = (e as { input?: { todos?: unknown; subject?: unknown; taskId?: unknown; status?: unknown } }).input
         const now = await $.clock.now()
-        const listed = tool === 'TodoWrite' ? input?.todos : tool === 'TaskCreate' ? [{ content: input?.subject }] : []
+        const listed = tool === 'TodoWrite' ? args.todos : tool === 'TaskCreate' ? [{ content: args.subject }] : []
         const add = L.newTodoTitles(listed, (await read($, tasksA)).map(t => t.title))
-        if (tool === 'TaskCreate') created = add[0] ?? String(input?.subject ?? '')
+        if (tool === 'TaskCreate') created = add[0] ?? String(args.subject ?? '')
         if (add.length) {
           await update($, tasksA, (l: Task[]) => [
             ...l,
@@ -1047,8 +1163,8 @@ export const register: Register = (on, options) => {
         if (tool === 'TodoWrite') {
           await update($, tasksA, (l: Task[]) => L.syncTodos(l, listed, now))
         } else if (tool === 'TaskUpdate') {
-          const title = modelTasks.get(String(input?.taskId))
-          const to = L.statusOfTask(input?.status)
+          const title = modelTasks.get(String(args.taskId))
+          const to = L.statusOfTask(args.status)
           if (title && to) await update($, tasksA, (l: Task[]) => l.map(t => (L.sameTitle(t.title, title) ? L.setCard(t, to, now) : t)))
         }
         await save($)
@@ -1069,11 +1185,20 @@ export const register: Register = (on, options) => {
       modelTasks.set(String(made.task?.id ?? made.result?.task?.id ?? modelTasks.size + 1), created)
     }
     try {
-      if (L.serverOfTool(tool) === 'graphify' || (tool === 'Bash' && L.isGraphifyQuery((e as { input?: { command?: unknown } }).input?.command))) {
+      if (L.serverOfTool(tool) === 'graphify' || (tool === 'Bash' && L.isGraphifyQuery(args.command))) {
         await addSaving('graphify', opt('graphifyTokensPerCall', 1200), $)
       }
-      if (tool.startsWith('mcp__graft__')) {
+      const command = args.command
+      // graft answers the same way through its MCP tools and its CLI, so both are counted
+      if (tool.startsWith('mcp__graft__') || (tool === 'Bash' && L.isGraftCli(command))) {
+        graftUsedTurn = true
         await addSaving('graft', L.parseGraftSaved((res as { text?: string }).text), $)
+      } else if (hasGraft && !graftUsedTurn && !graftNudgedTurn && graftNudges < L.GRAFT_NUDGE_MAX && L.isTextSearch(tool, command) && !(res as { deny?: unknown }).deny) {
+        // a plain text search while graft sat unused: say so once, after the result, where the model reads it next
+        graftNudgedTurn = true
+        graftNudges += 1
+        const got = res as { context?: readonly string[] }
+        return { ...res, context: [...(got.context ?? []), L.GRAFT_NUDGE] } as typeof res
       } else if (tool.startsWith('mcp__token-optimizer__smart_')) {
         await addSaving('optimizer', opt('optimizerTokensPerCall', 1200), $)
       }
@@ -1094,6 +1219,8 @@ export const register: Register = (on, options) => {
       lastTouch = await $.clock.now()
       lastReal = lastTouch
       coldWarned = false
+      isDrifting = !isCavemanOff && L.cavemanDrift(lastAnswer)
+      void refreshRtk($)
     }
     await addUsage($, usage?.model, usage)
     if (e.agentId && usage && L.modelBucket(usage.model) === 'Haiku') {
@@ -1135,7 +1262,7 @@ export const register: Register = (on, options) => {
     if (!e.agentId && usage && L.toolAvailable('ponytail', undefined, undefined, 0, (await read($, limitsA)).skills)) {
       await addSaving('ponytail', L.cavemanSaved(usage.output_tokens ?? 0, opt('ponytailRatio', 0.45)), $)
     }
-    if (!e.agentId && usage) {
+    if (!e.agentId && usage && opt('caveman', 1) > 0 && !isCavemanOff) {
       await addSaving('caveman', L.cavemanSaved(usage.output_tokens ?? 0, opt('cavemanRatio', 0.35)), $)
     }
     await save($)
@@ -1171,9 +1298,12 @@ export const register: Register = (on, options) => {
   })
 
   // ------------------------------------------------------------ the pane
+  // Layout rule: nothing is counted in characters. Columns are Boxes with a width, bars are Boxes with a background
+  // (the engine draws its own Progress that way), and text wraps or truncates in the room the layout gives it. So the
+  // pane holds at any width and in a proportional font, where a row of block characters did not.
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Text, Button } = $.ui.resolve(e)
-    const [tasks, usage, savings, git, limits, frame, tip, goal, pending, draft, mins, savedOrder, hist, answered, rtk] = await Promise.all([
+    const [tasks, usage, savings, git, limits, frame, tip, goal, pending, draft, mins, savedOrder, hist, answered, rtk, isArranging, effort] = await Promise.all([
       read($, tasksA),
       read($, usageA),
       read($, savingsA),
@@ -1189,17 +1319,70 @@ export const register: Register = (on, options) => {
       read($, histA).catch(() => [] as Hist[]),
       read($, answeredA),
       read($, rtkA),
+      read($, arrangeA),
+      read($, effortA),
     ])
     const Input = ($.ui.resolve(e) as any).Input as ((p: Record<string, unknown>) => any) | undefined
     const now = await $.clock.now()
-
-    // room inside a window: the pane's body less a round border and one column of padding each side
-    const cols = Math.max(36, Number((e.props as { bodyColumns?: number })?.bodyColumns) || 60)
-    const inner = cols - 4
+    const props = e.props as { bodyColumns?: number; placement?: string }
+    // only a hint for what to leave out when the pane is narrow; no width is computed from it
+    const isNarrow = (Number(props?.bodyColumns) || 60) < 44
+    const isStill = opt('reducedMotion', 0) > 0
     // one label column for every row, so values line up down the whole pane
-    const LBL = 11
-    const barW = Math.max(6, Math.min(28, inner - LBL - 16))
-    const pctText = (pct: number) => `${pct.toFixed(0)}%`.padStart(5)
+    const LBL = 10
+
+    // a bar: a track with its fills side by side, each a share of the track's own width
+    const track = (key: string, fills: { pct: number; color: string }[]) => {
+      let room = 100
+      return (
+        <Box key={key} flexGrow={1} flexShrink={1} minWidth={4} height={1} backgroundColor={L.TRACK} overflow="hidden">
+          {fills.map((f, i) => {
+            // a width is a whole percent; any real share keeps at least one, and together they never pass the track
+            const pct = f.pct > 0 ? Math.min(room, Math.max(1, Math.round(f.pct))) : 0
+            room -= pct
+            return pct > 0 ? <Box key={`${key}-${i}`} width={`${pct}%`} height={1} backgroundColor={L.fillOf(f.color)} /> : null
+          })}
+        </Box>
+      )
+    }
+    const label = (text: string, color?: string) => (
+      <Box width={LBL} flexShrink={0}>
+        <Text color={color} bold={Boolean(color)} dimColor={!color} wrap="truncate-end">
+          {text}
+        </Text>
+      </Box>
+    )
+    // one line per meter: label, bar, percent, tail
+    const meter = (name: string, pct: number | undefined, tail: string, color?: string) => (
+      <Box key={`meter-${name}`} gap={1}>
+        {label(name, color)}
+        {pct === undefined ? (
+          <Text dimColor>n/a</Text>
+        ) : (
+          [
+            track(`track-${name}`, [{ pct, color: color ?? L.barColor(pct) }]),
+            <Box key={`pct-${name}`} width={4} flexShrink={0} justifyContent="flex-end">
+              <Text bold>{`${pct.toFixed(0)}%`}</Text>
+            </Box>,
+            tail && !isNarrow ? (
+              <Box key={`tail-${name}`} flexShrink={0}>
+                <Text dimColor>{tail}</Text>
+              </Box>
+            ) : null,
+          ]
+        )}
+      </Box>
+    )
+    const field = (name: string, value: string, color?: string) => (
+      <Box key={`field-${name}`} gap={1}>
+        {label(name)}
+        <Box flexGrow={1} flexShrink={1}>
+          <Text color={color} bold={Boolean(color)} wrap="truncate-end">
+            {value}
+          </Text>
+        </Box>
+      </Box>
+    )
 
     const toggleMin = (id: string) => update($, minA, (m: Record<string, boolean>) => ({ ...m, [id]: !m[id] }))
     // layout: the person's section order, saved across sessions; null is the default order
@@ -1221,26 +1404,22 @@ export const register: Register = (on, options) => {
       void update($, orderA, () => null)
       void $.store.set('deck.order', null)
     }
-    const reorderBtns = (slot: string) => (
-      <Box>
-        <Text dimColor>⠿ </Text>
-        <Button key={`up-${slot}`} label="▲" onPress={() => moveSlot(slot, -1)} />
-        <Button key={`dn-${slot}`} label="▼" onPress={() => moveSlot(slot, 1)} />
-        <Text> </Text>
-      </Box>
-    )
+    // a section: a coloured frame, its title and note, a fold button, and the move buttons while arranging
     const win = (icon: string, title: string, color: string, body: any, note?: string, slot?: string) => {
       const isMin = Boolean(mins[title])
       return (
-        <Box flexDirection="column" borderStyle="round" borderColor={color} paddingX={1}>
-          <Box justifyContent="space-between">
-            <Text bold color={color} wrap="truncate-end">
-              {icon} {title}
-              {note ? <Text dimColor>{`  ${note}`}</Text> : null}
-            </Text>
-            <Box>
-              {slot ? reorderBtns(slot) : null}
-              <Button key={`min-${title}`} label={isMin ? '＋' : '－'} onPress={() => void toggleMin(title)} />
+        <Box key={`win-${title}`} flexDirection="column" borderStyle="round" borderColor={color} borderDimColor={isMin} paddingX={1}>
+          <Box justifyContent="space-between" gap={1}>
+            <Box flexGrow={1} flexShrink={1}>
+              <Text bold color={color} wrap="truncate-end">
+                {icon} {title}
+                {note ? <Text dimColor>{`  ${note}`}</Text> : null}
+              </Text>
+            </Box>
+            <Box flexShrink={0}>
+              {slot && isArranging ? <Button key={`up-${slot}`} label="▲" onPress={() => moveSlot(slot, -1)} /> : null}
+              {slot && isArranging ? <Button key={`dn-${slot}`} label="▼" onPress={() => moveSlot(slot, 1)} /> : null}
+              <Button key={`min-${title}`} label={isMin ? '▸' : '▾'} onPress={() => void toggleMin(title)} />
             </Box>
           </Box>
           {isMin ? null : body}
@@ -1248,50 +1427,105 @@ export const register: Register = (on, options) => {
       )
     }
 
-    // one line per meter: label, filled and empty bar, percent, tail; nested Text so nothing wraps
-    const meter = (label: string, pct: number | undefined, tail: string, color?: string) => {
-      if (pct === undefined) {
-        return (
-          <Text dimColor wrap="truncate-end">
-            {label.padEnd(LBL)}
-            {'·'.repeat(barW)}
-            {'   n/a'}
+    // ---------------- the facts every placement shows
+    const idleMin = lastTouch ? Math.max(0, Math.floor((now - lastTouch) / 60_000)) : 0
+    const ttlMin = opt('cacheTtlMin', 60)
+    // cache: an estimate from the clock (the server is never asked); it redraws with the pane's other refreshes
+    const isColdNow = Boolean(lastTouch) && idleMin >= ttlMin && (limits.ctxTokens ?? 0) >= opt('coldMinTokens', 50_000)
+    const warmLeft = warmUntil > now ? Math.round((warmUntil - now) / 60_000) : 0
+    const cacheColor = isColdNow ? 'red' : warmLeft ? 'green' : 'yellow'
+    const progress = L.boardProgress(tasks)
+    const pctText = `${Math.round(progress.ratio * 100)}%`
+    // the glance line: what would otherwise need three sections open
+    const chips: { text: string; color: string }[] = [
+      ...(limits.ctxWindow ? [{ text: `ctx ${limits.ctxPct.toFixed(0)}%`, color: L.barColor(limits.ctxPct) }] : []),
+      ...(limits.fiveHour ? [{ text: `5h ${limits.fiveHour.pct.toFixed(0)}%`, color: L.barColor(limits.fiveHour.pct) }] : []),
+      ...(limits.sevenDay ? [{ text: `week ${limits.sevenDay.pct.toFixed(0)}%`, color: L.barColor(limits.sevenDay.pct) }] : []),
+      ...(lastTouch ? [{ text: `cache ${isColdNow ? 'cold' : 'warm'}`, color: cacheColor }] : []),
+      ...(effort ? [{ text: `effort ${effort}`, color: 'cyan' }] : []),
+      ...(limits.usd !== undefined ? [{ text: `$${limits.usd.toFixed(2)}`, color: 'white' }] : []),
+    ]
+    const glance = chips.length ? (
+      <Text wrap="wrap">
+        {chips.map((c, i) => (
+          <Text key={`chip-${i}`}>
+            {i ? <Text dimColor>{' · '}</Text> : null}
+            <Text color={c.color}>{c.text}</Text>
           </Text>
-        )
-      }
-      const b = L.bar(pct, barW)
+        ))}
+      </Text>
+    ) : null
+
+    // ---------------- board progress: one equal stretch per card, in the card's colour
+    const inkOf = (i: number, status: Task['status']) => (status === 'failed' ? L.FAILED_COLOR : status === 'todo' ? undefined : L.cardColor(i))
+    const SHIMMER = 4
+    const progressBar = (
+      <Box key="board-bar" gap={1}>
+        <Box flexGrow={1} flexShrink={1} minWidth={4} height={1} backgroundColor={L.TRACK} overflow="hidden">
+          {L.boardSlices(tasks).map(x =>
+            x.status === 'doing' ? (
+              // the running stretch shimmers: a lit part sweeps across it, one step per frame
+              L.shimmerMask(SHIMMER, frame, isStill).map((lit, i) => (
+                <Box key={`slice-${x.card}-${i}`} flexGrow={1} height={1} backgroundColor={lit ? L.cardColor(x.card) : L.shade(L.cardColor(x.card), 0.45)} />
+              ))
+            ) : (
+              // a todo stretch has no fill: the track shows through as work still to do
+              <Box key={`slice-${x.card}`} flexGrow={SHIMMER} height={1} backgroundColor={inkOf(x.card, x.status)} />
+            ),
+          )}
+        </Box>
+        <Box flexShrink={0}>
+          <Text bold color={L.gradientAt(progress.ratio)}>
+            {pctText}
+          </Text>
+        </Box>
+      </Box>
+    )
+    const botOf = (t: Task) => {
+      const bot = L.workingBot(t.tier, frame, isStill)
       return (
-        <Text wrap="truncate-end">
-          <Text color={color} bold={Boolean(color)}>
-            {label.padEnd(LBL)}
-          </Text>
-          <Text color={color ?? L.barColor(pct)}>{b.full}</Text>
-          <Text dimColor>{b.empty}</Text>
-          <Text bold>{pctText(pct)}</Text>
-          <Text dimColor>{tail ? `  ${tail}` : ''}</Text>
+        <Text bold>
+          <Text color={L.TIER_COLOR[t.tier]}>{bot.face}</Text>
+          <Text color={bot.sparkColor}>{bot.spark}</Text>{' '}
         </Text>
       )
     }
 
-    const field = (label: string, value: string, color?: string) => (
-      <Text wrap="truncate-end">
-        <Text dimColor>{label.padEnd(LBL)}</Text>
-        <Text color={color} bold={Boolean(color)}>
-          {value}
-        </Text>
-      </Text>
-    )
+    // ---------------- minimized: the small form shows what reads at a glance, and no buttons (clicks may not reach it)
+    if (props?.placement === 'widget') {
+      const live = tasks.find(t => t.status === 'doing')
+      return (
+        <Box flexDirection="column" paddingX={1}>
+          <Text bold color="cyan" wrap="truncate-end">
+            ◆ DECK
+            {tasks.length ? <Text dimColor>{`  ${progress.done}/${progress.total} done`}</Text> : null}
+          </Text>
+          {tasks.length ? progressBar : null}
+          {live ? (
+            <Text wrap="truncate-end">
+              {botOf(live)}
+              {live.title}
+            </Text>
+          ) : null}
+          {glance}
+        </Box>
+      )
+    }
 
     // ---------------- header
     const header = (
-      <Box flexDirection="column" borderStyle="double" borderColor="cyan" paddingX={1}>
-        <Text bold color="cyan" wrap="truncate-end">
-          ◆ COMMAND DECK
-        </Text>
-        <Box gap={1} flexWrap="wrap">
-          <Button key="fresh" label="⇢ Handoff+/Clean" onPress={() => void fresh($).then(t => $.ui.toast(t))} />
-          <Button key="reset-layout" label="↺ Reset layout" onPress={resetLayout} />
+      <Box key="header" flexDirection="column" borderStyle="round" borderColor="cyan" paddingX={1}>
+        <Box justifyContent="space-between" flexWrap="wrap" columnGap={1}>
+          <Text bold color="cyan" wrap="truncate-end">
+            ◆ COMMAND DECK
+          </Text>
+          <Box gap={1} flexShrink={0}>
+            <Button key="fresh" label="⇢ Fresh chat" onPress={() => void fresh($).then(t => $.ui.toast(t))} />
+            <Button key="arrange" label={isArranging ? '✔ Done' : '⠿ Arrange'} onPress={() => void update($, arrangeA, (isOn: boolean) => !isOn)} />
+            {isArranging ? <Button key="reset-layout" label="↺ Reset" onPress={resetLayout} /> : null}
+          </Box>
         </Box>
+        {glance}
       </Box>
     )
 
@@ -1299,38 +1533,32 @@ export const register: Register = (on, options) => {
     const fiveTail = limits.fiveHour ? `↻ ${L.resetsIn(limits.fiveHour.resetsAt, now)}` : ''
     const weekTail = limits.sevenDay ? `↻ ${L.resetsIn(limits.sevenDay.resetsAt, now)}` : ''
     const ctxTail = limits.ctxWindow ? `${L.compact(limits.ctxTokens ?? 0)}/${L.compact(limits.ctxWindow)}` : ''
-    // cache: an estimate from the clock (the server is never asked); it redraws with the pane's other refreshes
-    const idleMin = lastTouch ? Math.max(0, Math.floor((now - lastTouch) / 60_000)) : 0
-    const ttlMin = opt('cacheTtlMin', 60)
-    const isColdNow = Boolean(lastTouch) && idleMin >= ttlMin && (limits.ctxTokens ?? 0) >= opt('coldMinTokens', 50_000)
-    const warmLeft = warmUntil > now ? Math.round((warmUntil - now) / 60_000) : 0
     const cacheText = !lastTouch
       ? 'no turn yet'
       : `${isColdNow ? 'cold' : 'warm'}, idle ${idleMin}m${warmLeft ? `, keep-warm ${warmLeft}m left` : ', keep-warm off'}`
-    const cacheColor = isColdNow ? 'red' : warmLeft ? 'green' : 'yellow'
-    // the context bar split by where the tokens come from (the engine's own /context breakdown)
-    const segs = L.ctxSegments(limits.parts ?? [], limits.ctxWindow, 30).sort((x, y) => y.tokens - x.tokens)
-    const used = segs.reduce((n, x) => n + x.cells, 0)
+    // the context bar split by where the tokens come from (the engine's own /context breakdown), biggest first
+    const segs = L.ctxSegments(limits.parts ?? [], limits.ctxWindow).sort((x, y) => y.tokens - x.tokens)
     const ctxBar = segs.length ? (
-      <Text wrap="truncate-end">
-        <Text dimColor>{'Context'.padEnd(LBL)}</Text>
-        <Text bold>{`${limits.ctxPct.toFixed(0)}%`.padStart(4)} </Text>
-        {segs.map(x => (
-          <Text key={`seg-${x.name}`} color={x.color}>
-            {'█'.repeat(x.cells)}
-          </Text>
-        ))}
-        <Text dimColor>{'░'.repeat(Math.max(0, 30 - used))}</Text>
-        <Text dimColor>{` ${ctxTail}`}</Text>
-      </Text>
+      <Box key="meter-Context" gap={1}>
+        {label('Context')}
+        {track('track-Context', segs)}
+        <Box width={4} flexShrink={0} justifyContent="flex-end">
+          <Text bold>{`${limits.ctxPct.toFixed(0)}%`}</Text>
+        </Box>
+        {isNarrow ? null : (
+          <Box flexShrink={0}>
+            <Text dimColor>{ctxTail}</Text>
+          </Box>
+        )}
+      </Box>
     ) : null
-    // one tight band per category, biggest first, as many per line as fit; the colour is the band itself
+    // one band per category, as many per line as fit; the colour is the band itself
     const ctxLegend = segs.length
       ? [
           <Box key="ctx-bands" flexWrap="wrap" columnGap={1}>
             {segs.map(x => (
               <Text key={`lg-${x.name}`} backgroundColor={x.color} color={L.ctxInk(x.color)}>
-                {` ${x.name} [${L.compact(x.tokens)}/${x.pct.toFixed(1)}%] `}
+                {` ${x.name} ${L.compact(x.tokens)} `}
               </Text>
             ))}
           </Box>,
@@ -1353,6 +1581,7 @@ export const register: Register = (on, options) => {
         ctxBar ?? meter('Context', limits.ctxWindow ? limits.ctxPct : undefined, ctxTail),
         ...ctxLegend,
         field('Cache', cacheText, cacheColor),
+        ...(opt('autoEffort', 1) > 0 ? [field('Effort', effort ? `${effort} for this request` : 'your own level', effort ? 'cyan' : undefined)] : []),
       ],
       limits.usd !== undefined ? `session $${limits.usd.toFixed(2)}` : undefined,
       'USAGE',
@@ -1365,34 +1594,27 @@ export const register: Register = (on, options) => {
       '◉',
       'MODELS TODAY',
       'magenta',
-      shown.every(s => s.tokens === 0)
-        ? <Text dimColor>no turns counted yet</Text>
-        : shown.map(s => meter(s.name, s.pct, L.compact(s.tokens), modelColor[s.name])),
+      shown.every(s => s.tokens === 0) ? <Text dimColor>no turns counted yet</Text> : shown.map(s => meter(s.name, s.pct, L.compact(s.tokens), modelColor[s.name])),
       undefined,
       'MODELS',
     )
 
     // ---------------- board
-    const twoUp = inner >= 54
-    const colW = twoUp ? Math.max(12, Math.floor((inner - 4) / 3) - 4) : inner - 2
     // the running card's marker blinks; reducedMotion holds it lit (the bar's running stretch has its own shimmer)
-    const isLit = opt('reducedMotion', 0) > 0 || frame % 2 === 0
-    const inkOf = (i: number, status: Task['status']) => (status === 'failed' ? L.FAILED_COLOR : status === 'todo' ? undefined : L.cardColor(i))
+    const isLit = isStill || frame % 2 === 0
+    const mins2 = (t: Task) => (t.startedAt ? Math.max(0, Math.round(((t.endedAt ?? now) - t.startedAt) / 60_000)) : 0)
     const card = (t: Task) => {
       const tierColor = L.TIER_COLOR[t.tier]
-      const bot = t.status === 'doing' ? L.workingBot(t.tier, frame, opt('reducedMotion', 0) > 0) : null
       const icon = t.status === 'done' ? '✔' : t.status === 'failed' ? '✖' : t.status === 'skipped' ? '–' : '○'
       const iconColor = t.status === 'done' ? 'green' : t.status === 'failed' ? 'red' : 'gray'
+      const took = t.status === 'doing' && mins2(t) > 0 ? `${mins2(t)}m` : t.status === 'done' && t.tokens > 0 ? L.compact(t.tokens) : ''
       return (
         <Text key={`card-${t.id}`} wrap="wrap">
           <Text color={inkOf(tasks.indexOf(t), t.status)} dimColor={t.status === 'todo' || (t.status === 'doing' && !isLit)}>
-            {t.status === 'todo' ? '░' : '█'}{' '}
+            {t.status === 'todo' ? '□' : '■'}{' '}
           </Text>
-          {bot ? (
-            <Text bold>
-              <Text color={tierColor}>{bot.face}</Text>
-              <Text color={bot.sparkColor}>{bot.spark}</Text>{' '}
-            </Text>
+          {t.status === 'doing' ? (
+            botOf(t)
           ) : (
             <Text color={iconColor} bold>
               {icon}{' '}
@@ -1402,66 +1624,38 @@ export const register: Register = (on, options) => {
             [{L.TIER_LABEL[t.tier]}]{' '}
           </Text>
           <Text dimColor={t.status === 'done' || t.status === 'skipped'}>{t.title}</Text>
+          {took ? <Text dimColor>{`  ${took}`}</Text> : null}
         </Text>
       )
     }
-    const lane = (title: string, color: string, list: Task[]) => (
-      <Box flexDirection="column" borderStyle="single" borderColor={color} paddingX={1} flexGrow={1}>
-        <Text bold color={color}>
-          {title} <Text dimColor>{list.length}</Text>
-        </Text>
-        {list.length === 0 ? <Text dimColor>—</Text> : list.map(card)}
-      </Box>
-    )
+    // a lane with no cards is left out; lanes sit side by side while there is room and stack when there is not
+    const DONE_SHOWN = 6
+    const lane = (title: string, color: string, list: Task[], cap = list.length) =>
+      list.length === 0 ? null : (
+        <Box key={`lane-${title}`} flexDirection="column" flexGrow={1} minWidth={isNarrow ? undefined : 26}>
+          <Text bold color={color}>
+            ▍{title} <Text dimColor>{list.length}</Text>
+          </Text>
+          {list.slice(-cap).map(card)}
+          {list.length > cap ? <Text dimColor>{`  … ${list.length - cap} earlier`}</Text> : null}
+        </Box>
+      )
     const todo = tasks.filter(t => t.status === 'todo')
     const doing = tasks.filter(t => t.status === 'doing')
     const done = tasks.filter(t => t.status === 'done' || t.status === 'failed' || t.status === 'skipped')
-    const progress = L.boardProgress(tasks)
-    // the percent sits right of the bar and never shrinks: a pane narrower than its reported width clips the bar, not the percent
-    const progressBar = (
-      <Box>
-        <Box flexGrow={1} flexShrink={1} overflow="hidden">
-          <Text wrap="truncate-end">
-            {L.boardSlices(tasks, Math.max(6, inner - 7)).map(x =>
-              x.status === 'doing' ? (
-                // the running stretch shimmers: a lit cell sweeps across it, one cell per frame
-                L.shimmerMask(x.cells, frame, opt('reducedMotion', 0) > 0).map((lit, i) => (
-                  <Text key={`slice-${x.card}-${i}`} color={inkOf(x.card, x.status)} dimColor={!lit}>
-                    {lit ? '▓' : '░'}
-                  </Text>
-                ))
-              ) : (
-                <Text key={`slice-${x.card}`} color={inkOf(x.card, x.status)} dimColor={x.status === 'todo'}>
-                  {(x.status === 'todo' ? '░' : '█').repeat(x.cells)}
-                </Text>
-              ),
-            )}
-          </Text>
-        </Box>
-        <Box flexShrink={0}>
-          <Text bold color={L.gradientAt(progress.ratio)}>
-            {pctText(progress.ratio * 100)}
-          </Text>
-        </Box>
-      </Box>
-    )
     const boardWin = win(
       '▦',
       'BOARD',
       'yellow',
-      tasks.length === 0 ? (
-        <Text dimColor>Empty. /command-deck-plan &lt;what you want done&gt; fills it, /command-deck run works through it.</Text>
-      ) : (
-        <Box flexDirection="column">
-          {progressBar}
-          <Box gap={twoUp ? 1 : 0} flexDirection={twoUp ? 'row' : 'column'}>
-            {lane('TODO', 'yellow', todo)}
-            {lane('DOING', 'cyan', doing)}
-            {lane('DONE', 'green', done)}
-          </Box>
+      <Box flexDirection="column">
+        {progressBar}
+        <Box flexWrap="wrap" columnGap={2}>
+          {lane('DOING', 'cyan', doing)}
+          {lane('TODO', 'yellow', todo)}
+          {lane('DONE', 'green', done, DONE_SHOWN)}
         </Box>
-      ),
-      tasks.length ? `${done.length}/${tasks.length} done` : undefined,
+      </Box>,
+      `${done.length}/${tasks.length} done`,
       'BOARD',
     )
 
@@ -1522,6 +1716,7 @@ export const register: Register = (on, options) => {
 
     // ---------------- git: one fact per line
     const dirty = git?.dirty ?? []
+    const gitNote = git ? `${git.branch}${dirty.length ? ` · ${dirty.length} changed` : ''}${git.ahead ? ` · ↑${git.ahead}` : ''}${git.behind ? ` · ↓${git.behind}` : ''}` : undefined
     const gitWin = win(
       '⎇',
       'GIT',
@@ -1530,11 +1725,7 @@ export const register: Register = (on, options) => {
         <Box flexDirection="column">
           {field('Branch', git.branch, 'magenta')}
           {field('Upstream', git.upstream || 'none', git.upstream ? 'green' : 'red')}
-          {field(
-            'Sync',
-            git.upstream ? (git.ahead || git.behind ? `↑${git.ahead}  ↓${git.behind}` : 'in sync') : '—',
-            git.ahead || git.behind ? 'yellow' : 'green',
-          )}
+          {field('Sync', git.upstream ? (git.ahead || git.behind ? `↑${git.ahead}  ↓${git.behind}` : 'in sync') : '—', git.ahead || git.behind ? 'yellow' : 'green')}
           {field('Changes', dirty.length ? `${dirty.length} file${dirty.length === 1 ? '' : 's'}` : 'clean', dirty.length ? 'yellow' : 'green')}
           {dirty.slice(0, 6).map(f => (
             <Text dimColor wrap="truncate-end">
@@ -1558,39 +1749,42 @@ export const register: Register = (on, options) => {
       ) : (
         <Text dimColor>not a git repository</Text>
       ),
-      undefined,
+      // the note keeps the facts in view while the section is folded
+      gitNote,
       'GIT',
     )
 
-    // ---------------- savings
+    // ---------------- savings: every tool has a row and a plain state, so a tool that is off is never just missing
     const inPrice = opt('inputDollarsPerMTok', 3)
     const outPrice = opt('outputDollarsPerMTok', 15)
     const askInstall = (tools: L.ToolName[]) => void $.prompt.submit({ text: L.installPrompt(tools) })
-    // an installed tool shows once it has saved something; a missing one shows so it can be installed
-    const saveRow = (label: string, tokens: number, price: number, color: string, state: L.ToolState = 'active', tool?: L.ToolName) =>
-      state !== 'missing' && tokens <= 0 ? null : state === 'missing' ? (
-        tool && L.TOOL_INFO[tool] ? (
-          <Box gap={1}>
-            <Text wrap="truncate-end" dimColor>
-              {label.padEnd(LBL)}
-            </Text>
+    const DOT: Record<L.ToolState, { mark: string; color: string }> = { active: { mark: '●', color: 'green' }, inactive: { mark: '◐', color: 'yellow' }, missing: { mark: '○', color: 'gray' } }
+    const saveRow = (name: string, tokens: number, price: number, state: L.ToolState = 'active', tool?: L.ToolName) => (
+      <Box key={`save-${name}`} gap={1}>
+        <Box flexShrink={0}>
+          <Text color={DOT[state].color}>{DOT[state].mark}</Text>
+        </Box>
+        {label(name, state === 'active' ? 'white' : undefined)}
+        {state === 'missing' ? (
+          tool && L.TOOL_INFO[tool] ? (
             <Button key={`install-${tool}`} label="Install" onPress={() => askInstall([tool])} />
-          </Box>
+          ) : (
+            <Text dimColor>not installed</Text>
+          )
+        ) : state === 'inactive' ? (
+          <Text color="yellow">installed, not running</Text>
+        ) : tokens > 0 ? (
+          <Text wrap="truncate-end">
+            <Text color="green" bold>
+              {L.compact(tokens)}
+            </Text>
+            <Text dimColor>{`  ≈ $${((tokens * price) / 1_000_000).toFixed(2)}`}</Text>
+          </Text>
         ) : (
-          <Text wrap="truncate-end" dimColor>
-            {label.padEnd(LBL)}
-            {'(Not Installed)'}
-          </Text>
-        )
-      ) : (
-        <Text wrap="truncate-end">
-          <Text dimColor>{label.padEnd(LBL)}</Text>
-          <Text color={color} bold>
-            {L.compact(tokens).padStart(6)}
-          </Text>
-          {state === 'inactive' ? <Text color="yellow">{'  (Not Active)'}</Text> : <Text dimColor>{`  tokens  ≈ $${((tokens * price) / 1_000_000).toFixed(2)}`}</Text>}
-        </Text>
-      )
+          <Text dimColor>on, nothing saved yet</Text>
+        )}
+      </Box>
+    )
     const graftState = L.toolState('graft', limits.servers, limits.skillTokens, savings.graft, limits.skills)
     const graphifyState = L.toolState('graphify', limits.servers, undefined, savings.graphify, limits.skills)
     const tokenEconState = L.toolState('tokeneconomizer', limits.servers, undefined, 0, limits.skills)
@@ -1600,39 +1794,41 @@ export const register: Register = (on, options) => {
       .filter(([, st]) => st === 'missing')
       .map(([t]) => t)
     const rtkSaved = rtk?.saved ?? 0
+    const deckSaved = L.deckSaved(savings)
     const savedDollars = L.dollars(savings, inPrice, outPrice) + (rtkSaved * inPrice) / 1_000_000
     const savingsWin = win(
       '✚',
-      'TOKEN SAVED TODAY',
+      'SAVED TODAY',
       'yellow',
       [
-        saveRow('Graft', savings.graft, inPrice, 'green', graftState, 'graft'),
-        saveRow('Caveman', savings.caveman, outPrice, 'yellow', L.toolState('caveman', limits.servers, limits.skillTokens, savings.caveman, limits.skills)),
-        saveRow('Optimizer', savings.optimizer, inPrice, 'green', L.toolState('optimizer', limits.servers, limits.skillTokens, savings.optimizer, limits.skills)),
-        saveRow('RTK', rtkSaved, inPrice, 'cyan', rtk?.state),
-        saveRow('Ponytail', savings.ponytail, outPrice, 'cyan', L.toolState('ponytail', undefined, undefined, savings.ponytail, limits.skills)),
-        saveRow('Graphify', savings.graphify, inPrice, 'blue', graphifyState, 'graphify'),
-        saveRow('TokenEcon.', 0, inPrice, 'blue', tokenEconState, 'tokeneconomizer'),
-        missing.length > 2 ? <Button key="install-all" label={`Install all (${missing.length})`} onPress={() => askInstall(missing)} /> : null,
-        <Text key="total-line" dimColor wrap="truncate-end">
-          {'─'.repeat(40)}
-        </Text>,
-        <Text key="total" wrap="truncate-end">
-          <Text bold>{'CMD Deck'.padEnd(LBL)}</Text>
-          <Text color="magenta" bold>
-            {L.compact(L.totalSaved(savings, rtkSaved)).padStart(6)}
+        saveRow('Deck', deckSaved, inPrice),
+        deckSaved > 0 ? (
+          <Text key="deck-parts" dimColor wrap="wrap">
+            {`  routing ${L.compact(savings.routing)} · fresh chat ${L.compact(savings.fresh)} · keep-warm ${L.compact(savings.keepwarm)} · smart tools ${L.compact(savings.tools)}`}
           </Text>
-          <Text dimColor>{'  tokens'}</Text>
-        </Text>,
-        <Text key="total-note" dimColor wrap="truncate-end">
-          {`deck + tools  ≈ $${savedDollars.toFixed(2)} est.`}
-        </Text>,
+        ) : null,
+        // caveman is the deck's own text now: on whenever its option is on, with no skill to install or load
+        saveRow('Caveman', savings.caveman, outPrice, opt('caveman', 1) > 0 ? 'active' : 'inactive'),
+        saveRow('Graft', savings.graft, inPrice, hasGraft ? 'active' : graftState, 'graft'),
+        saveRow('RTK', rtkSaved, inPrice, rtk?.state ?? 'missing'),
+        saveRow('Optimizer', savings.optimizer, inPrice, L.toolState('optimizer', limits.servers, limits.skillTokens, savings.optimizer, limits.skills)),
+        saveRow('Ponytail', savings.ponytail, outPrice, L.toolState('ponytail', undefined, undefined, savings.ponytail, limits.skills)),
+        saveRow('Graphify', savings.graphify, inPrice, graphifyState, 'graphify'),
+        saveRow('TokenEcon.', 0, inPrice, tokenEconState, 'tokeneconomizer'),
+        missing.length > 1 ? <Button key="install-all" label={`Install all (${missing.length})`} onPress={() => askInstall(missing)} /> : null,
+        <Box key="total" gap={1} borderStyle="single" borderColor="gray" paddingX={1}>
+          <Text bold>Total</Text>
+          <Text color="magenta" bold>
+            {L.compact(L.totalSaved(savings, rtkSaved))}
+          </Text>
+          <Text dimColor wrap="truncate-end">{`tokens  ≈ $${savedDollars.toFixed(2)} est.`}</Text>
+        </Box>,
       ],
       `≈ $${savedDollars.toFixed(2)} est.`,
       'SAVED',
     )
 
-    // ---------------- plan brief: the generated goal text, full and wrapped, at the bottom
+    // ---------------- plan brief: the generated goal text, full and wrapped
     const BRIEF_COLORS: Record<string, string> = { Brief: 'cyan', Goal: 'cyan', Constraints: 'yellow', Behaviour: 'magenta', Behavior: 'magenta', 'Definition of done': 'green', Verification: 'blue', Done: 'green' }
     const briefParts = (text: string): { label: string; body: string }[] => {
       const re = /(?:^|\s)(Brief|Goal|Constraints|Behaviou?r|Definition of done|Verification|Done|Context|Notes?|Scope):\s/g
@@ -1713,38 +1909,27 @@ export const register: Register = (on, options) => {
         )
       : null
 
-    // ---------------- tip
+    // ---------------- tip: one wrapped line of coloured words; the layout breaks it where the pane ends
     const tipText = L.TIPS[tip % L.TIPS.length] ?? ''
-    const tipLines = L.wrapWords(tipText, Math.max(10, inner))
-    let wordIndex = 0
-    const tipWin = (
-      <Box flexDirection="column" borderStyle="round" borderColor="yellow" paddingX={1}>
-        <Box justifyContent="space-between">
-          <Text bold color="yellow" wrap="truncate-end">
-            ✦ RANDOM TIPS
-          </Text>
-          <Box>
-            {reorderBtns('TIPS')}
-            <Button key="min-tips" label={mins.TIPS ? '＋' : '－'} onPress={() => void toggleMin('TIPS')} />
-          </Box>
-        </Box>
-        {mins.TIPS ? null : tipLines.map(line => (
-          <Text wrap="truncate-end">
-            {line.map(w => {
-              const i = wordIndex++
-              return (
-                <Text italic color={L.TIP_COLORS[(i + tip) % L.TIP_COLORS.length]}>
-                  {w}{' '}
-                </Text>
-              )
-            })}
-          </Text>
-        ))}
-        {mins.TIPS ? null : <Box gap={1} flexWrap="wrap">
+    const tipWin = win(
+      '✦',
+      'TIPS',
+      'yellow',
+      <Box flexDirection="column">
+        <Text wrap="wrap">
+          {tipText.split(/\s+/).map((w, i) => (
+            <Text key={`tip-${i}`} italic color={L.TIP_COLORS[(i + tip) % L.TIP_COLORS.length]}>
+              {w}{' '}
+            </Text>
+          ))}
+        </Text>
+        <Box gap={1} flexWrap="wrap">
           <Button key="tip-next" label="Next tip" onPress={() => update($, tipA, (n: number) => n + 1)} />
           <Button key="tip-learn" label="Learn more →" onPress={() => void learnMore($, tipText)} />
-        </Box>}
-      </Box>
+        </Box>
+      </Box>,
+      undefined,
+      'TIPS',
     )
 
     // visible must be filled before the buttons are pressed, not before they are built: handlers read it later
@@ -1763,6 +1948,11 @@ export const register: Register = (on, options) => {
     return (
       <Box flexDirection="column">
         {header}
+        {tasks.length || pending ? null : (
+          <Text dimColor wrap="wrap">
+            {' '}Board is empty. Type what you want done: the deck plans it and fills the board.
+          </Text>
+        )}
         {visible.map(id => parts[id])}
       </Box>
     )

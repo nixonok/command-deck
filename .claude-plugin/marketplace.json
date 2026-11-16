@@ -8,7 +8,7 @@
     {
       "name": "command-deck",
       "source": "./",
-      "description": "Plan with the right model per task, kanban board, usage and git panel, caveman toggle, handoff memory."
+      "description": "Plan with the right model and effort per task, kanban board, usage and git panel, caveman mode, handoff and project memory."
     }
   ]
 }

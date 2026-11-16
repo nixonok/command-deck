@@ -4,6 +4,10 @@ import * as G from './guidelines'
 import * as L from './lib'
 import type { Task } from '../types'
 
+// the test runner has both; the mod runtime's types leave them out
+declare const setTimeout: (fn: (...a: never[]) => void, ms: number) => unknown
+declare const console: { log: (...a: unknown[]) => void }
+
 test('parseJudge: closes only the asked cards, done wins over skip, junk marks nothing', () => {
   const open: Task[] = [
     { id: 1, title: 'Confirm /ws rate rule live in Cloudflare', tier: 'sonnet', why: '', status: 'todo', tokens: 0 },
@@ -46,11 +50,15 @@ test('model buckets and billed tokens ignore cache reads', () => {
   expect(Math.round(s.find(x => x.name === 'Sonnet')?.pct ?? 0)).toBe(75)
 })
 
-test('bars fill proportionally and never overflow', () => {
-  expect(L.bar(50, 10)).toEqual({ full: '█████', empty: '░░░░░' })
-  expect(L.bar(250, 4).full).toBe('████')
-  expect(L.bar(-5, 4).full).toBe('')
-  expect(L.barColor(90)).toBe('red')
+test('bar colours: a level picks green, yellow or red; a fill is always a hex colour; shade darkens toward black', () => {
+  expect([L.barColor(10), L.barColor(70), L.barColor(90)]).toEqual(['green', 'yellow', 'red'])
+  expect(L.fillOf('green')).toBe('#22c55e')
+  expect(L.fillOf('#123456')).toBe('#123456')
+  expect(L.fillOf('no-such-colour')).toMatch(/^#[0-9a-f]{6}$/)
+  expect(L.shade('#804020', 0.5)).toBe('#402010')
+  expect(L.shade('#804020', 1)).toBe('#804020')
+  expect(L.shade('#804020', Number.NaN)).toBe('#804020')
+  expect(L.shade('red', 0.5)).toBe('red')
 })
 
 test('graft saving is read from its own line; caveman saving follows the ratio', () => {
@@ -156,12 +164,6 @@ test('waves: consecutive parallel tasks go together, others alone', () => {
   expect(L.nextWave([1, 2, 3, 4, 5, 6].map(i => mk(i, true))).length).toBe(4)
 })
 
-test('tip wrapping never exceeds the width', () => {
-  const lines = L.wrapWords('Compact at 60% context, not 95%: summaries stay sharp and the cache stays cheap.', 20)
-  expect(lines.every(l => l.join(' ').length <= 20)).toBe(true)
-  expect(lines.flat().join(' ')).toContain('cache stays cheap.')
-})
-
 test('auto-plan attaches a plan only when it adds something', () => {
   const one = { isClear: true, questions: [], prompt: 'p', tasks: [{ title: 'Add a button', tier: 'sonnet' as const, why: '', parallel: false }] }
   const two = { ...one, tasks: [...one.tasks, { title: 'Rename label', tier: 'haiku' as const, why: '', parallel: true }] }
@@ -203,11 +205,11 @@ test('context segments: one run per used category, never wider than the bar', ()
     { name: 'Messages', tokens: 60000, kind: 'used' as const },
     { name: 'Free space', tokens: 100000, kind: 'free' as const },
   ]
-  const segs = L.ctxSegments(parts, 200000, 30)
+  const segs = L.ctxSegments(parts, 200000)
   expect(segs.map(x => x.name)).toEqual(['System prompt', 'MCP tools', 'Messages'])
-  expect(segs.reduce((n, x) => n + x.cells, 0)).toBeLessThanOrEqual(30)
-  expect(segs.every(x => x.cells >= 1)).toBe(true)
-  expect(L.ctxSegments(parts, 0, 30)).toEqual([])
+  // each run is its share of the window, so together they never pass the bar
+  expect(segs.map(x => x.pct)).toEqual([1.5, 10, 30])
+  expect(L.ctxSegments(parts, 0)).toEqual([])
 })
 
 test('smart tools: server names match across spellings, the model reply parses, all four deck savings sum into one figure', () => {
@@ -249,16 +251,16 @@ test('guidelines: core stays small and sections are picked per step and tier', (
   })
   expect(G.CORE.split(/\s+/).length).toBeLessThan(G.CORE_MAX_WORDS)
   const rename = plan([['Rename label in menu', 'haiku']])
-  expect(G.pickForPlan(rename)[0].sections).toEqual([])
+  expect(G.pickForPlan(rename)[0]!.sections).toEqual([])
   expect(G.guidelineExtras(rename)).toBe('')
   const arch = plan([
     ['Design module boundaries for the save system', 'opus'],
     ['Fix crash when save file is empty', 'sonnet'],
   ])
   const picks = G.pickForPlan(arch)
-  expect(picks[0].sections).toContain('design')
-  expect(picks[1].sections).toContain('bug')
-  expect(picks[1].sections).not.toContain('design')
+  expect(picks[0]!.sections).toContain('design')
+  expect(picks[1]!.sections).toContain('bug')
+  expect(picks[1]!.sections).not.toContain('design')
   expect(G.finalPass(arch)).toContain('Final pass')
   expect(L.planContext(arch).match(/Final pass/g)?.length).toBe(1)
   expect(L.planContext(rename)).not.toContain('Final pass')
@@ -427,19 +429,18 @@ test('board follows the chat: TodoWrite completes a plan card and adds a new one
   await $.session.start({ cwd: '/tmp/x', surface: null, isInteractive: false } as any)
   await $.tool.call({
     tool: 'TodoWrite',
-    input: { todos: [{ content: 'Map the data flow of the board', status: 'completed', activeForm: 'x' }, { content: 'Brand new step', status: 'in_progress', activeForm: 'y' }] },
+    todos: [{ content: 'Map the data flow of the board', status: 'completed', activeForm: 'x' }, { content: 'Brand new step', status: 'in_progress', activeForm: 'y' }],
   } as any)
-  await $.tool.call({ tool: 'TaskCreate', input: { subject: 'Another step to do', description: 'd' } } as any)
-  await $.tool.call({ tool: 'TaskUpdate', input: { taskId: '1', status: 'completed' } } as any)
+  await $.tool.call({ tool: 'TaskCreate', subject: 'Another step to do', description: 'd' } as any)
+  await $.tool.call({ tool: 'TaskUpdate', taskId: '1', status: 'completed' } as any)
   const ui = await $.ui.mount({ plugin: 'command-deck', surface: 'terminal', component: 'Pane', props: {}, requestId: 'command-deck' } as any)
   const all = (await ui.findAll({ type: 'Text' })).map(x => x.text).join(' | ')
   expect(all).toContain('2/4 done')
-  expect(all).toMatch(/TODO 1 \| 1 \| ░ ○ \[Sonnet\] Fix done tasks/)
-  expect(all).toMatch(/DOING 1 \| 1 \| █ \S+ \[Sonnet\] Brand new step/)
-  expect(all).toMatch(/DONE 2 \| 2 \| █ ✔ \[Sonnet\] Map the data flow/)
-  // the bar above the lanes: one stretch per card in board order (done, todo, doing, done), then the percent
-  // the running stretch shows one lit cell of its shimmer; the rest of the bar is done or waiting
-  // the percent is the row's last box and never shrinks; the bar's box clips, so a narrow pane cuts the bar, not the percent
+  expect(all).toMatch(/▍TODO 1 \| 1 \| □ ○ \[Sonnet\] Fix done tasks/)
+  expect(all).toMatch(/▍DOING 1 \| 1 \| ■ \S+ \[Sonnet\] Brand new step/)
+  expect(all).toMatch(/▍DONE 2 \| 2 \| ■ ✔ \[Sonnet\] Map the data flow/)
+  // the bar above the lanes is Boxes the layout sizes, never a count of characters: one equal stretch per card in board
+  // order (done, todo, doing, done), then the percent, which is the row's last box and never shrinks
   const boxes: any[] = []
   const walk = (n: any) => {
     if (!n || typeof n !== 'object') return
@@ -448,16 +449,28 @@ test('board follows the chat: TodoWrite completes a plan card and adds a new one
   }
   const textOf = (n: any): string => (typeof n === 'string' ? n : (n?.children ?? []).map(textOf).join(''))
   walk(await ui.drawn())
-  const pctBox = boxes.find(b => b.props?.flexShrink === 0 && /^\s*63%$/.test(textOf(b)))
+  const pctBox = boxes.find(b => b.props?.flexShrink === 0 && /^63%$/.test(textOf(b)))
   expect(pctBox).toBeDefined()
   const row = boxes.find(b => (b.children ?? []).includes(pctBox))
   expect(row.children.at(-1)).toBe(pctBox)
-  expect(row.children[0].props?.overflow).toBe('hidden')
-  expect(textOf(row.children[0])).toMatch(/^█+░+▓░*█+$/)
+  const bar = row.children[0]
+  expect(bar.props).toMatchObject({ flexGrow: 1, height: 1, backgroundColor: L.TRACK, overflow: 'hidden' })
+  // done, todo, doing (four shimmer parts), done: every stretch grows by the same total, so the bar always spans its room
+  const grow = (bar.children as any[]).map(b => b.props.flexGrow)
+  expect(grow).toEqual([4, 4, 1, 1, 1, 1, 4])
+  expect(bar.children[0].props.backgroundColor).toBe(L.cardColor(0))
+  expect(bar.children[1].props.backgroundColor).toBeUndefined() // todo: the track shows through
+  expect(bar.children.at(-1).props.backgroundColor).toBe(L.cardColor(3))
+  // nothing in the pane is drawn by repeating block characters, at any width
+  for (const bodyColumns of [24, 40, 80, 200]) {
+    const sized = await $.ui.mount({ plugin: 'command-deck', surface: 'desktop', component: 'Pane', props: { bodyColumns }, requestId: 'command-deck' } as any)
+    expect((await sized.findAll({ type: 'Text' })).map(x => x.text).join('')).not.toMatch(/[█░▓]{2}/)
+    await sized.unmount()
+  }
   await ui.unmount()
 })
 
-test('token saved: a Graphify query counts and its row turns live; a missing tool says Not Installed', async ($, on) => {
+test('token saved: a Graphify query counts and its row turns live; every tool keeps a row that says its state', async ($, on) => {
   mock.clock(on, { now: 1_791_868_793_562 })
   mock.store(on, {})
   on('session.start', () => ({ cwd: '/tmp/x' }) as any)
@@ -474,20 +487,22 @@ test('token saved: a Graphify query counts and its row turns live; a missing too
     await ui.unmount()
     return all + ' || ' + buttons
   }
-  // a missing tool offers an Install button; Install all needs more than two missing (here Graft reads as present)
+  // a missing tool offers an Install button, and two or more missing add Install all (here Graft reads as present)
   const first = await rows()
-  expect(first).toMatch(/Graphify\s+\|/)
-  expect(first.split(' || ')[1]).toMatch(/Install \| Install/)
-  expect(first).not.toContain('Install all')
-  await $.tool.call({ tool: 'Bash', input: { command: 'graphify install' } } as any)
+  expect(first).toMatch(/○ \| Graphify/)
+  expect(first.split(' || ')[1]).toMatch(/Install \| Install \| Install all \(2\)/)
+  await $.tool.call({ tool: 'Bash', command: 'graphify install' } as any)
   expect((await rows()).split(' || ')[1]).toMatch(/Install \| Install/)
-  await $.tool.call({ tool: 'Bash', input: { command: 'graphify query "how does auth work"' } } as any)
+  await $.tool.call({ tool: 'Bash', command: 'graphify query "how does auth work"' } as any)
   const all = await rows()
   expect(all.split(' || ')[1]).not.toMatch(/Install \| Install/)
   expect(all).toContain('1.2k')
-  expect(all).toMatch(/Ponytail\s+\(Not Installed\)/)
+  expect(all).toMatch(/● \| Graphify \| 1\.2k/)
+  expect(all).toMatch(/○ \| Ponytail \| not installed/)
   // rtk is not on this test's PATH (process.run fails), so its row says so
-  expect(all).toMatch(/RTK\s+\(Not Installed\)/)
+  expect(all).toMatch(/○ \| RTK \| not installed/)
+  // caveman is the deck's own text: on without any skill, and its row never disappears
+  expect(all).toMatch(/● \| Caveman \| on, nothing saved yet/)
 })
 
 test('board: an agent takes the card it names, else gets its own Doing card', () => {
@@ -557,9 +572,9 @@ test('board follows agents and replies without a plan: agent card Doing then don
     return all
   }
   await $.agent.spawn({ description: 'Find board sync hooks', prompt: 'look', subagentType: 'Explore' } as any)
-  expect(await board()).toMatch(/DOING 1 \| 1 \| .*\(.ᴗ.\)\S \[Haiku\] Find board sync hooks/)
+  expect(await board()).toMatch(/▍DOING 1 \| 1 \| .*\(.ᴗ.\)\S \[Haiku\] Find board sync hooks/)
   await $.turn.complete({ agentId: 'a1', answer: 'found' } as any)
-  expect(await board()).toMatch(/DONE 1 \| 1 \| █ ✔ \[Haiku\] Find board sync hooks/)
+  expect(await board()).toMatch(/▍DONE 1 \| 1 \| ■ ✔ \[Haiku\] Find board sync hooks/)
   await $.turn.complete({ answer: 'Registered.\nDone: Register GA dimensions' } as any)
   expect(await board()).toContain('2/2 done')
 })
@@ -582,15 +597,11 @@ test('token saved: CMD Deck sums the deck and every tool, shown last under a lin
   const ui = await $.ui.mount({ plugin: 'command-deck', surface: 'terminal', component: 'Pane', props: {}, requestId: 'command-deck' } as any)
   const all = (await ui.findAll({ type: 'Text' })).map(x => x.text).join(' | ')
   await ui.unmount()
-  const section = all.slice(all.indexOf('TOKEN SAVED TODAY'))
-  const line = section.indexOf('────')
-  expect(line).toBeGreaterThan(section.indexOf('Graphify'))
-  expect(section.indexOf('CMD Deck')).toBeGreaterThan(line)
-  expect(section.slice(0, line)).not.toContain('CMD Deck')
-  expect(section).toContain('deck + tools')
-  // installed tools that saved nothing yet are hidden; missing ones stay, to be installed
-  expect(section.slice(0, line)).not.toMatch(/Caveman|Optimizer/)
-  expect(section.slice(0, line)).toMatch(/Ponytail\s+\(Not Installed\)/)
+  const section = all.slice(all.indexOf('SAVED TODAY'))
+  // every tool has a row whatever it saved, so a tool that is off never just vanishes; the total closes the section
+  for (const name of ['Deck', 'Caveman', 'Graft', 'RTK', 'Optimizer', 'Ponytail', 'Graphify', 'TokenEcon.']) expect(section).toContain(name)
+  expect(section.indexOf('Total')).toBeGreaterThan(section.indexOf('TokenEcon.'))
+  expect(section).toMatch(/○ \| Ponytail \| not installed/)
 })
 
 test('board judge: an answer without Done/Skip lines still closes the cards it settles', async ($, on) => {
@@ -678,24 +689,303 @@ test('running stretch shimmers: a two-cell highlight sweeps through it, determin
   expect(L.shimmerMask(4, 9, true)).toEqual([true, true, true, true])
 })
 
-test('board progress: one colored stretch per card, cells fill the bar exactly, skipped cards leave the count', () => {
+test('board progress: one colored stretch per card, skipped cards leave the count', () => {
   const mk = (status: Task['status'], id: number): Task => ({ id, title: `t${id}`, tier: 'sonnet', why: '', status, tokens: 0 })
   const board = [mk('done', 1), mk('doing', 2), mk('todo', 3), mk('skipped', 4), mk('failed', 5)]
   expect(L.boardProgress(board)).toEqual({ done: 1, total: 4, ratio: 0.375 })
-  const slices = L.boardSlices(board, 30)
   // the skipped card has no stretch; each stretch keeps its card's place on the board, so row and bar share a color
-  expect(slices.map(x => [x.card, x.status])).toEqual([[0, 'done'], [1, 'doing'], [2, 'todo'], [4, 'failed']])
-  for (const w of [0, 1, 3, 7, 30, 31]) expect(L.boardSlices(board, w).reduce((n, x) => n + x.cells, 0)).toBe(w)
-  expect(L.boardSlices(board, 30)).toEqual(slices)
+  expect(L.boardSlices(board).map(x => [x.card, x.status])).toEqual([[0, 'done'], [1, 'doing'], [2, 'todo'], [4, 'failed']])
   // empty and all-skipped boards: no stretches, 0%, never NaN
   expect(L.boardProgress([])).toEqual({ done: 0, total: 0, ratio: 0 })
-  expect(L.boardSlices([], 20)).toEqual([])
+  expect(L.boardSlices([])).toEqual([])
   expect(L.boardProgress([mk('skipped', 1)]).ratio).toBe(0)
-  expect(L.boardSlices(board, Number.NaN).every(x => x.cells === 0)).toBe(true)
   expect(L.boardProgress([mk('done', 1), mk('done', 2)]).ratio).toBe(1)
   // eight card colors, then they repeat; the percent runs red to amber to green and clamps
   expect(new Set(Array.from({ length: 8 }, (_, i) => L.cardColor(i))).size).toBe(8)
   expect(L.cardColor(8)).toBe(L.cardColor(0))
   expect([L.gradientAt(0), L.gradientAt(0.5), L.gradientAt(1)]).toEqual(['#ef4444', '#f59e0b', '#22c55e'])
   expect([L.gradientAt(-1), L.gradientAt(9), L.gradientAt(Number.NaN)]).toEqual(['#ef4444', '#22c55e', '#ef4444'])
+})
+
+// ------------------------------------------------------------ 1.5.0: effort routing, reliable tools, memory, the new pane
+
+/** The engine's side for a test that only needs the deck to start. */
+const boot = (on: any, files: Record<string, string> = {}, usage?: unknown) => {
+  const written: Record<string, string> = { ...files }
+  mock.clock(on, { now: 1_791_868_793_562 })
+  on('session.start', () => ({ cwd: '/tmp/x' }) as any)
+  on('command.register', () => ({ value: undefined }) as any)
+  on('ui.open', () => ({ value: undefined }) as any)
+  on('process.run', () => ({ value: { stdout: '', stderr: '', code: 1 } }) as any)
+  on('session.usage', () => ({ value: usage }) as any)
+  on('fs.exists', (_: unknown, e: any) => ({ value: Object.keys(written).some(k => JSON.stringify(e).includes(k)) }) as any)
+  on('fs.read', (_: unknown, e: any) => ({ value: written[Object.keys(written).find(k => JSON.stringify(e).includes(k)) ?? ''] ?? '' }) as any)
+  on('fs.write', (_: unknown, e: any) => {
+    written[String(e.path ?? e.file ?? Object.values(e)[0])] = String(e.content ?? e.text ?? e.data ?? Object.values(e)[1])
+    return { value: undefined } as any
+  })
+  return written
+}
+/** Runs a streamed call to its end and gives its result. */
+const drain = async (s: any) => {
+  if (!s || typeof s[Symbol.asyncIterator] !== 'function') return await s
+  const it = s[Symbol.asyncIterator]()
+  let r = await it.next()
+  while (!r.done) r = await it.next()
+  return r.value
+}
+const planJson = (effort: string) =>
+  JSON.stringify({ isClear: true, questions: [], prompt: 'p', code: false, effort, tasks: [{ title: 'Answer in chat', tier: 'sonnet', why: 'w', parallel: false }] })
+const human = (text: string) => ({ text, origin: { kind: 'composer' }, wait: false }) as any
+
+test('effort: a named level wins, mode 1 only lowers, mode 2 may raise, saving caps at medium, no session level sends nothing', () => {
+  expect(L.namedEffort('fix it, effort: low')).toBe('low')
+  expect(L.namedEffort('use max effort here')).toBe('max')
+  expect(L.namedEffort('put more effort in')).toBeUndefined()
+  const r = L.routedEffort
+  expect(r({ want: 'low', session: 'high', mode: 1 })).toBe('low')
+  expect(r({ want: 'xhigh', session: 'high', mode: 1 })).toBeUndefined()
+  expect(r({ want: 'xhigh', session: 'high', mode: 2 })).toBe('xhigh')
+  expect(r({ want: 'high', session: 'high', mode: 2 })).toBeUndefined()
+  expect(r({ want: 'low', session: 'high', mode: 0 })).toBeUndefined()
+  // no level in the session (a model without effort, auto, or a number budget): the request is left alone
+  expect(r({ want: 'low', session: undefined, mode: 2 })).toBeUndefined()
+  expect(r({ want: 'low', session: 7, mode: 2 })).toBeUndefined()
+  expect(r({ session: 'high', mode: 1, isSaving: true })).toBe('medium')
+  expect(r({ want: 'xhigh', session: 'xhigh', mode: 2, isSaving: true })).toBe('medium')
+  expect(r({ named: 'max', want: 'low', session: 'medium', mode: 1, isSaving: true })).toBe('max')
+  // an unproven model changes level only while the chat is small; a proven one always, a refuted one never
+  expect(L.mayRouteEffort(undefined, 10_000)).toBe(true)
+  expect(L.mayRouteEffort(undefined, 90_000)).toBe(false)
+  expect(L.mayRouteEffort('ok', 90_000)).toBe(true)
+  expect(L.mayRouteEffort('bad', 100)).toBe(false)
+  expect(L.effortVerdict({ cache_read_input_tokens: 50_000, cache_creation_input_tokens: 900 })).toBe('ok')
+  expect(L.effortVerdict({ cache_read_input_tokens: 2_000, cache_creation_input_tokens: 48_000 })).toBe('bad')
+  expect(L.effortVerdict({ cache_read_input_tokens: 3_000, cache_creation_input_tokens: 2_000 })).toBeUndefined()
+  expect(L.effortVerdict({ cache_read_input_tokens: 15_000, cache_creation_input_tokens: 30_000 })).toBeUndefined() // a big new message, not a rewrite
+  expect(L.effortVerdict(null)).toBeUndefined()
+  // one bad reading is a suspicion (a compaction reads the same), the second settles it; a good one clears it
+  expect(L.nextTrust(undefined, 'bad')).toBe('suspect')
+  expect(L.nextTrust('suspect', 'bad')).toBe('bad')
+  expect(L.nextTrust('suspect', 'ok')).toBe('ok')
+  expect(L.nextTrust('suspect', undefined)).toBe('suspect')
+  expect(L.mayRouteEffort('suspect', 10_000)).toBe(true)
+  // the level of one request: routed while allowed, the session's once refuted
+  expect(L.stepEffort({ routed: 'low', session: 'high', trust: undefined, ctxTokens: 10_000 })).toBe('low')
+  expect(L.stepEffort({ routed: undefined, session: 'high', trust: 'ok', ctxTokens: 500_000 })).toBe('high')
+  expect(L.stepEffort({ routed: 'low', session: 'high', trust: 'bad', ctxTokens: 10_000, prev: { sent: 'low', session: 'high' } })).toBe('high')
+  // unproven in a big chat: the level it had is kept (a change there is the cost the limit bounds), whatever is routed now
+  expect(L.stepEffort({ routed: undefined, session: 'high', trust: undefined, ctxTokens: 90_000, prev: { sent: 'medium', session: 'high' } })).toBe('medium')
+  expect(L.stepEffort({ routed: 'low', session: 'high', trust: 'suspect', ctxTokens: 90_000, prev: { sent: 'high', session: 'high' } })).toBe('high')
+  // the person changed their own level meanwhile: theirs is sent; and a family with no request yet starts at the session's
+  expect(L.stepEffort({ routed: 'low', session: 'low', trust: undefined, ctxTokens: 90_000, prev: { sent: 'medium', session: 'high' } })).toBe('low')
+  expect(L.stepEffort({ routed: 'low', session: 'high', trust: undefined, ctxTokens: 90_000 })).toBe('high')
+  expect(L.parsePlan(planJson('low'))?.effort).toBe('low')
+  expect(L.parsePlan(planJson('turbo'))?.effort).toBeUndefined()
+})
+
+test('effort routing: the planner level rides on the main request, a subagent request is left alone, a cache rewrite turns it off', async ($, on) => {
+  boot(on)
+  mock.store(on, {})
+  const toasts: string[] = []
+  on('ui.toast', (_: unknown, e: any) => {
+    toasts.push(JSON.stringify(e))
+    return { value: undefined } as any
+  })
+  on('model.complete', () => ({ value: { isAnswered: true, text: planJson('low'), usage: {} } }) as any)
+  on('prompt.submit', (_: unknown, e: any) => ({ text: e.text }) as any)
+  const sent: unknown[] = []
+  let usage: unknown = null
+  on('turn.step', async function* (_: unknown, e: any) {
+    sent.push(e.effort)
+    return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'end_turn', usage }
+  } as any)
+  on('turn.complete', () => ({ text: '' }) as any)
+  await $.session.start({ cwd: '/tmp/x', surface: null, isInteractive: false } as any)
+  const step = (extra: object = {}) => drain($.turn.step({ turnId: 't', index: 0, model: 'claude-sonnet-5-5', effort: 'high', messageCount: 1, ...extra } as any))
+  await step()
+  expect(sent.at(-1)).toBe('high') // nothing planned yet: the session's own level
+  await $.prompt.submit(human('Rename the label in the settings menu to Options'))
+  await step()
+  expect(sent.at(-1)).toBe('low')
+  await step({ agentId: 'a1' })
+  expect(sent.at(-1)).toBe('high')
+  // a short follow-up continues the work at its level
+  await $.prompt.submit(human('yes, go on'))
+  await step()
+  expect(sent.at(-1)).toBe('low')
+  // a slash command is its own work: it runs at the session's level, not the level before it
+  await $.prompt.submit(human('/code-review'))
+  await step()
+  expect(sent.at(-1)).toBe('high')
+  // another model family starts clean: its first request is not read as a level change, whatever its cache says
+  await $.turn.complete({ answer: 'ok' } as any) // a main turn ended: the cache counts as warm from here
+  usage = { model: 'claude-opus-5-5', cache_read_input_tokens: 0, cache_creation_input_tokens: 60_000 }
+  await step({ model: 'claude-opus-5-5' })
+  expect(toasts).toEqual([])
+  // a level named in the message is used as named, for that message only
+  usage = { model: 'claude-sonnet-5-5', cache_read_input_tokens: 500, cache_creation_input_tokens: 60_000 }
+  await $.prompt.submit(human('Now rename the other label too, max effort'))
+  await step()
+  expect(sent.at(-1)).toBe('max')
+  // that changed request wrote the whole prefix again: one such reading is a suspicion, so routing goes on
+  await $.prompt.submit(human('Rename the third label in the settings menu as well'))
+  await step()
+  expect(sent.at(-1)).toBe('low')
+  // the second one settles it: the family is marked and left alone afterwards
+  expect(toasts.join(' ')).toContain('Effort routing is off for Sonnet')
+  await step()
+  expect(sent.at(-1)).toBe('high')
+})
+
+test('caveman: the rules are inline with no skill to load, and only a reply that slid into long sentences earns a reminder', async ($, on) => {
+  expect(L.CAVEMAN_SECTION).not.toMatch(/skill/i)
+  const terse = Array.from({ length: 14 }, () => 'Bug sat in save path. Null check was missing. Fixed it. Tests pass now.').join(' ')
+  const wordy = Array.from({ length: 4 }, () => 'The underlying problem turned out to be that the save path never validated the incoming payload before attempting to write it to disk, which meant that an empty file could slip through unnoticed.').join(' ')
+  expect(L.cavemanDrift(terse)).toBe(false)
+  expect(L.cavemanDrift(wordy)).toBe(true)
+  expect(L.cavemanDrift(`\`\`\`\n${wordy}\n\`\`\``)).toBe(false) // code is not prose
+  expect(L.cavemanDrift('One long sentence but far too little text to judge the style of a whole reply by it.')).toBe(false)
+  expect(L.cavemanDrift(undefined)).toBe(false)
+  boot(on)
+  mock.store(on, {})
+  const seen: string[][] = []
+  on('prompt.submit', (_: unknown, e: any) => {
+    seen.push([...(e.context ?? [])])
+    return { text: e.text } as any
+  })
+  on('turn.complete', () => ({ text: '' }) as any)
+  await $.session.start({ cwd: '/tmp/x', surface: null, isInteractive: false } as any)
+  await $.turn.complete({ answer: terse } as any)
+  await $.prompt.submit(human('do the next one'))
+  await $.turn.complete({ answer: wordy } as any)
+  await $.prompt.submit(human('do the next one'))
+  await $.prompt.submit(human('and the one after'))
+  expect(seen).toEqual([[], [L.CAVEMAN_REMINDER], []])
+  // the section promises "normal mode" turns it off: from then on a long reply earns no reminder in this chat
+  await $.prompt.submit(human('normal mode please'))
+  await $.turn.complete({ answer: wordy } as any)
+  await $.prompt.submit(human('do the next one'))
+  expect(seen.slice(3)).toEqual([[], []])
+})
+
+test('planner gate: a plain one-line question skips the planner call, a request with a build word does not', async ($, on) => {
+  expect(L.isPlainQuestion('What does HideBannerAds do?')).toBe(true)
+  expect(L.isPlainQuestion('Why is the Android export so slow on CI?')).toBe(true)
+  expect(L.isPlainQuestion('Why is the Android build so slow on CI?')).toBe(false) // "build" may be an order: the planner decides
+  expect(L.isPlainQuestion('How do I fix the crash in save?')).toBe(false)
+  expect(L.isPlainQuestion('Can you add dark mode?')).toBe(false)
+  expect(L.isPlainQuestion('Why is the build slow')).toBe(false)
+  expect(L.isPlainQuestion('What is this?\nAlso rename the label?')).toBe(false)
+  boot(on)
+  mock.store(on, {})
+  let calls = 0
+  on('model.complete', () => {
+    calls += 1
+    return { value: { isAnswered: true, text: planJson('medium'), usage: {} } } as any
+  })
+  on('prompt.submit', (_: unknown, e: any) => ({ text: e.text }) as any)
+  await $.session.start({ cwd: '/tmp/x', surface: null, isInteractive: false } as any)
+  await $.prompt.submit(human('What does the HideBannerAds method do in this project?'))
+  expect(calls).toBe(0)
+  await $.prompt.submit(human('Rename the label in the settings menu to Options'))
+  expect(calls).toBe(1)
+})
+
+test('graft: an indexed repo gets the search line, a CLI answer is counted, and a plain grep earns one nudge per turn', async ($, on) => {
+  expect(L.isTextSearch('Grep')).toBe(true)
+  expect(L.isTextSearch('Bash', 'grep -rn "foo" src')).toBe(true)
+  expect(L.isTextSearch('Bash', 'cd src && rg foo')).toBe(true)
+  expect(L.isTextSearch('Bash', 'rtk grep foo .')).toBe(true)
+  expect(L.isTextSearch('Bash', 'git log | grep fix')).toBe(false) // a filter on other output is not a code search
+  expect(L.isTextSearch('Bash', 'graft grep "foo"')).toBe(false)
+  expect(L.isTextSearch('Read')).toBe(false)
+  expect(L.isGraftCli('graft ask "how does save work" --source')).toBe(true)
+  expect(L.isGraftCli('npm i -g @nanonets/graft@latest')).toBe(false)
+  expect(L.houseSection()).toBe(L.HOUSE_SECTION)
+  boot(on, { 'graft/INDEX.md': '# graft' })
+  mock.store(on, {})
+  on('prompt.compose', () => ({ sections: [] }))
+  on('prompt.submit', (_: unknown, e: any) => ({ text: e.text }) as any)
+  on('tool.call', (_: unknown, e: any) => ({ result: {}, text: String(e.command).startsWith('graft') ? '[graft] tokens saved ≈ 12k\nhits' : 'out' }) as any)
+  await $.session.start({ cwd: '/tmp/x', surface: null, isInteractive: false } as any)
+  const composed = await $.prompt.compose({ model: 'claude-sonnet-5-5', promptModel: 'claude-sonnet-5-5', surfaces: ['terminal'], tools: [], outputStyle: null, traits: [] })
+  expect(composed.sections.find(x => x.id === 'command-deck:house')?.text).toContain(L.GRAFT_LINE)
+  const grep = () => $.tool.call({ tool: 'Bash', command: 'grep -rn "Save" src' } as any) as Promise<any>
+  expect((await grep()).context).toEqual([L.GRAFT_NUDGE])
+  expect((await grep()).context).toBeUndefined() // once per turn
+  await $.prompt.submit(human('next'))
+  await $.tool.call({ tool: 'Bash', command: 'graft ask "where is Save" --source' } as any)
+  expect((await grep()).context).toBeUndefined() // graft was used this turn: nothing to say
+  const ui = await $.ui.mount({ plugin: 'command-deck', surface: 'terminal', component: 'Pane', props: {}, requestId: 'command-deck' } as any)
+  expect((await ui.findAll({ type: 'Text' })).map(x => x.text).join(' | ')).toMatch(/● \| Graft \| 12k/)
+  await ui.unmount()
+})
+
+test('smart tools: a saving tool is never moved behind search, whatever the chooser says', async ($, on) => {
+  boot(on, {}, { context: { breakdown: { mcpTools: [
+    { serverName: 'graft', name: 'mcp__graft__graft_find_code', tokens: 300, isLoaded: true },
+    { serverName: 'unity', name: 'mcp__unity__unity_build', tokens: 900, isLoaded: true },
+  ] } } })
+  mock.store(on, {})
+  on('session.turns', () => ({ value: 0 }) as any)
+  // a short message skips the planner, so this is the chooser's answer: it names no server as needed
+  on('model.complete', () => ({ value: { isAnswered: true, text: '{"need":[]}', usage: {} } }) as any)
+  on('prompt.submit', (_: unknown, e: any) => ({ text: e.text }) as any)
+  on('tool.describe', () => ({ description: 'd' }) as any)
+  await $.session.start({ cwd: '/tmp/x', surface: null, isInteractive: false } as any)
+  await $.prompt.submit(human('fix the typo in readme'))
+  const placed = async (tool: string) => ((await $.tool.describe({ tool, description: 'd' } as any)) as any).isDeferred
+  expect(await placed('mcp__unity__unity_build')).toBe(true)
+  expect(await placed('mcp__graft__graft_find_code')).toBeUndefined()
+})
+
+test('project memory: lasting facts leave the handoff note, join the memory file once, and ride in every handoff', async ($, on) => {
+  const split = L.splitFacts('- built the board\n- next: tests\n\n## Lasting facts\n- Tests run with `claude plugin test .`\n- None new beyond that.\n* Strict validate must pass before a release\nThat is all I found.\n')
+  expect(split.note).toBe('- built the board\n- next: tests')
+  expect(split.facts).toEqual(['Tests run with `claude plugin test .`', 'Strict validate must pass before a release'])
+  expect(L.splitFacts('just a note').facts).toEqual([])
+  expect(L.splitFacts('note\n## Lasting facts\nnone').facts).toEqual([])
+  const once = L.mergeFacts('', ['Use bun for tests.', 'Never push without a tag'])
+  const twice = L.mergeFacts(once, ['use BUN for tests', 'Keep the pane free of block characters'])
+  expect(L.memoryFacts(twice)).toEqual(['Use bun for tests.', 'Never push without a tag', 'Keep the pane free of block characters'])
+  expect(L.memoryFacts(L.mergeFacts(twice, ['d', 'e'], 2))).toEqual(['d', 'e']) // the newest are kept
+  // the file is the person's too: their own lines stay, and nothing new leaves the file untouched
+  const edited = `${once}\n## My notes\nShip on Fridays only.\n`
+  expect(L.mergeFacts(edited, ['use bun for tests'])).toBe(edited)
+  const grown = L.mergeFacts(edited, ['A new fact', 'a NEW fact.'], 2)
+  expect(grown).toContain('## My notes\nShip on Fridays only.')
+  expect(L.memoryFacts(grown)).toEqual(['Never push without a tag', 'A new fact'])
+  expect(L.handoffAsk('g', [], ['Use bun for tests.'])).toContain('Already known, do not repeat:\n- Use bun for tests.')
+  expect(L.handoffMarkdown({ goal: 'g', tasks: [], rules: 'r', git: null, date: 'd', memory: once })).toContain('## Project memory\n- Use bun for tests.\n- Never push without a tag')
+  expect(L.handoffMarkdown({ goal: 'g', tasks: [], rules: 'r', git: null, date: 'd' })).not.toContain('Project memory')
+  const files = boot(on, { 'memory.md': once })
+  mock.store(on, {})
+  on('model.fork', () => ({ value: { isAnswered: true, text: '- board done\n\n## Lasting facts\n- The pane has no terminal preview: test with ui.mount', usage: {} } }) as any)
+  await $.session.start({ cwd: '/tmp/x', surface: null, isInteractive: false } as any)
+  await $.command.run({ command: 'command-deck', args: 'handoff' } as Parameters<typeof $.command.run>[0])
+  const memory = Object.entries(files).find(([k]) => k.endsWith('memory.md') && k !== 'memory.md')?.[1] ?? ''
+  expect(L.memoryFacts(memory)).toEqual(['Use bun for tests.', 'Never push without a tag', 'The pane has no terminal preview: test with ui.mount'])
+  const note = Object.entries(files).find(([k]) => /handoff-\d+\.md$/.test(k))?.[1] ?? ''
+  expect(note).toContain('## Where things stand\n- board done')
+  expect(note).not.toContain('Lasting facts')
+  expect(note).toContain('- The pane has no terminal preview: test with ui.mount')
+})
+
+test('pane: the minimized form is a glance with no buttons, and the move buttons show only while arranging', async ($, on) => {
+  boot(on)
+  mock.store(on, { 'deck.tasks': [card(1, 'Map the data flow of the board', 'done'), card(2, 'Fix done tasks staying in ToDo')] })
+  await $.session.start({ cwd: '/tmp/x', surface: null, isInteractive: false } as any)
+  const mount = (props: object) => $.ui.mount({ plugin: 'command-deck', surface: 'desktop', component: 'Pane', props, requestId: 'command-deck' } as any)
+  const small = await mount({ placement: 'widget' })
+  expect(await small.findAll({ type: 'Button' })).toHaveLength(0)
+  expect((await small.findAll({ type: 'Text' })).map(x => x.text).join(' | ')).toMatch(/◆ DECK {2}1\/2 done/)
+  await small.unmount()
+  const full = await mount({ placement: 'dock', bodyColumns: 50 })
+  const labels = async () => (await full.findAll({ type: 'Button' })).map(x => (x as any).props?.label ?? x.text)
+  expect(await labels()).not.toContain('▲')
+  await full.press({ key: 'arrange' })
+  expect(await labels()).toContain('▲')
+  expect(await labels()).toContain('↺ Reset')
+  await full.unmount()
 })

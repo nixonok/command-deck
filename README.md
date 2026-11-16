@@ -22,7 +22,7 @@ Command Deck puts it in one pane you can read at a glance:
 - context fill, daily token use and estimated savings
 - a plan with each step tagged Haiku, Sonnet or Opus
 - caveman replies, clean code rules and auto-plan, always on
-- a Handoff+/Clean button: writes a handoff, then clears the chat
+- a Fresh chat button: writes a handoff, then clears the chat
 - a warning before the cache goes cold, and a keep-warm ping
 
 It is my one-shot attempt to put most of what I know about saving tokens and cost into one tool, so nobody has to remember the routine. Feedback and fixes are welcome.
@@ -33,15 +33,22 @@ It is my one-shot attempt to put most of what I know about saving tokens and cos
 - **Kanban board.** Tasks, status, tokens per task, a history of the last 200 finished tasks that survives `/clear`.
 - **Usage and git panel.** Context bar, daily usage, branch, ahead/behind, changed files.
 - **Clean code toggle.** Engineering rules added to every chat. Step-specific rules (bug, feature, refactor, design, perf, security, risky, test) are picked per task and model by plain keywords, with one final review pass at the end. No extra model call.
-- **Caveman mode.** Short, blunt replies to save output tokens, on in every chat.
+- **Effort routing.** The planner also says how hard each request needs the model to think, and the deck sends that level with the turn: a rename runs at low, a hard bug at your own level. Nothing is added to the prompt and no skill is loaded. Some models pay for their whole cache again when the level changes: the deck watches the requests it sends at a changed level, and after two that were paid for again it leaves that model family alone. Until a family is proven, the level only changes while the context is under 80k tokens, so finding out has a bounded cost.
+- **Caveman mode.** Short, blunt replies to save output tokens, on in every chat. The rules are part of the deck, so no skill has to be installed or loaded; a reply that slides back into long sentences earns a one-line reminder on the next message.
+- **Graft first.** In a repo Graft has indexed, the deck tells the model to search with Graft, counts Graft's CLI answers as well as its MCP ones, never moves it behind tool search, and adds one short reminder after a plain grep in a turn where Graft sat unused.
+- **Project memory.** Each handoff also gathers up to three lasting facts (a command that works, a trap, a decision) into `.claude/deck/memory.md`, and every later handoff carries them.
 - **Handoff memory.** Writes a handoff note and starts a fresh chat at a context % you choose, or on a new topic.
 - **Cache guard and keep-warm.** Warns before an expensive cold-cache rewrite and can ping to keep the cache warm.
 - **Smart tool deferral.** Moves MCP servers the work does not need behind tool search.
-- **Savings counter.** Estimated tokens and dollars saved per tool (Graft, Caveman, Optimizer, RTK, Ponytail, Graphify). A tool that is not installed says (Not Installed); one installed but off says (Not Active).
+- **Savings counter.** Estimated tokens and dollars saved per tool (Graft, Caveman, Optimizer, RTK, Ponytail, Graphify). Every tool keeps its row and a plain state: ● on, ◐ installed but not running, ○ not installed.
 
 ### The pane
 
-The header holds Handoff+/Clean and Reset layout. Caveman, clean code and auto-plan are always on.
+The header holds Fresh chat and Arrange, and one line that reads at a glance: context, limits, cache, effort and cost. Arrange shows the move buttons on every section (and Reset); otherwise a section header holds only its fold button. Minimized, the pane shrinks to that glance line, the board bar and the running card.
+
+Nothing in the pane is counted in characters. Bars are boxes the layout sizes and text wraps in the room it gets, so a bar always spans its full width, at any window size and in any font.
+
+The pictures below are from 1.4; the layout has since changed as described here.
 
 <p align="center"><img src="assets/header.png" alt="Command Deck header" width="420"></p>
 
@@ -55,7 +62,7 @@ Usage shows the 5-hour and weekly limits, a context bar split by what fills it, 
 
 <p align="center"><img src="assets/usage.png" alt="Usage panel with limits, context breakdown and cache status" width="420"></p>
 
-The savings counter estimates what Graft, the optimizer, Graphify, Ponytail, caveman mode and Command Deck itself kept out of the context. The last row, under a line, is the CMD Deck total: Command Deck's own savings plus every tool above, an educated guess like the rows it adds up.
+The savings counter estimates what Graft, the optimizer, Graphify, Ponytail, caveman mode and Command Deck itself kept out of the context. The Deck row is Command Deck's own part (routing, fresh chats, keep-warm, smart tools). The last row is the total of every row above, an educated guess like the rows it adds up.
 
 <p align="center"><img src="assets/savings.png" alt="Token saved today panel with estimated tokens and dollars per source" width="420"></p>
 
@@ -106,7 +113,7 @@ After any install, run `/reload-plugins` (or start a new chat). The pane opens b
 | `/command-deck warm [on\|off] [hours]` | Keep the prompt cache warm |
 | `/command-deck tools [on\|off]` | Smart MCP tool deferral |
 
-Caveman mode, clean code rules and auto-plan are always on; there is no switch for them. The pane header has Handoff+/Clean (writes a handoff, then clears the chat) and Reset layout.
+Clean code rules and auto-plan are always on. Caveman and effort routing are on by default (`caveman`, `autoEffort`). To pick the effort for one message yourself, say it in the message: `effort: high`, or `max effort`. The pane header has Fresh chat (writes a handoff, then clears the chat) and Arrange.
 
 ## How clean code picks rules
 
@@ -132,10 +139,13 @@ Change a value in any of these ways:
 | `autoCompactPct` | 0 | Compact at this context % when handoff is off. |
 | `autoFresh` | 1 | Move to a new chat when a long chat starts a new topic. |
 | `handoffTurns` | 12 | Suggest a handoff after this many prompts. |
-| `plannerChatMessages` | 8 | Latest chat messages the planner reads. 0 sends none. |
+| `plannerChatMessages` | 5 | Latest chat messages the planner reads. 0 sends none. |
 | `plannerChatChars` | 500 | Characters kept per message sent to the planner. |
 | `judgeBoard` | 1 | After each answer, Haiku closes the TODO cards the answer settles. 0 is off. |
 | `autoStart` | 1 | Open the pane in every new chat. |
+| `caveman` | 1 | Short blunt replies in every chat. 0 is off. |
+| `autoEffort` | 1 | Effort routing: 0 off, 1 only lowers (never above your own `/effort` level), 2 may also raise. |
+| `saveModePct` | 80 | Past this percent of the 5-hour or weekly limit, effort routing sends nothing above medium. 0 is off. |
 | `reducedMotion` | 0 | 1 holds the Doing-card bots still (terminals have no reduced-motion setting). |
 | `coldGuard` | 1 | 0 off, 1 warn, 2 also hold the first send. |
 | `cacheTtlMin` | 60 | Prompt cache lifetime. Use 5 for API-key billing. |
@@ -169,11 +179,11 @@ claude plugin validate .
 
 ## Files it writes
 
-Only under `.claude/deck/` in your project: `rules.md` (your rules for new chats, edit freely), handoffs, progress notes and `rules-log.md`. Nothing leaves your machine except the model calls Claude Code already makes.
+Only under `.claude/deck/` in your project: `rules.md` (your rules for new chats, edit freely), `memory.md` (lasting facts gathered at handoffs, edit freely), handoffs, progress notes and `rules-log.md`. Nothing leaves your machine except the model calls Claude Code already makes.
 
 ## Optional tools
 
-Every savings row shows its tool's state. Graft and token-optimizer count as installed when their MCP servers are connected (the Graft skill without its server reads Not Active). Caveman, Ponytail and Graphify count as installed when the chat lists their skills (or the Graphify MCP server); Their figures are estimates. RTK's row comes from `rtk gain` (today's saved tokens) and `rtk verify` (Not Active when its Claude Code hook is not registered).
+Every savings row shows its tool's state. Graft and token-optimizer count as installed when their MCP servers are connected (the Graft skill without its server reads Not Active). Graft also counts as on in any repo that has its index (`graft/INDEX.md`), since its CLI works without the server. Caveman is part of the deck and needs nothing installed. Ponytail and Graphify count as installed when the chat lists their skills (or the Graphify MCP server); Their figures are estimates. RTK's row comes from `rtk gain` (today's saved tokens) and `rtk verify` (Not Active when its Claude Code hook is not registered).
 
 The board follows the chat's own task list: new tasks from `TodoWrite` or `TaskCreate` (or `Todo:` lines in a reply) become cards, and a card moves to Doing or Done when its task is started or completed (or a `Done:` line names it; a `Skip:` line closes it as skipped). Every subagent shows as its own card.
 
@@ -181,12 +191,14 @@ The board follows the chat's own task list: new tasks from `TodoWrite` or `TaskC
 
 Command Deck is a mod, so it uses powers a plain skill does not. Each one, and why:
 
-- **Writes files.** Only under `.claude/deck/` in the project (rules, handoffs, progress notes, history, tip files). The paths are fixed text in `hooks/register.tsx`. It never edits build, start-up, settings or instruction files.
+- **Writes files.** Only under `.claude/deck/` in the project (rules, memory, handoffs, progress notes, history, tip files). The paths are fixed text in `hooks/register.tsx`. It never edits build, start-up, settings or instruction files.
 - **Starts programs.** `git` (status and refs for the git panel), `rtk` (`gain` and `verify`, only to show the RTK savings row; absent means the row says Not Installed), and `open` / `xdg-open` / `explorer` to show the `.claude/deck/` folder. Each command is fixed text; nothing from the chat is run as a command.
 - **Reads the conversation, sends nothing out.** It reads chat and usage data to fill the board and savings. It sends no data to any server of its own; the only model calls are the ones Claude Code makes (including the Haiku agents below).
 - **Starts agents.** The planner and the board judge run as Haiku agents. They get the user's request, up to `plannerChatMessages` recent messages (each cut to `plannerChatChars` characters) and the task titles.
 - **Submits prompts.** The plan, a handoff and a new-topic message are submitted into the chat as the user's own prompt, so the user sees them. Nothing is hidden.
-- **Runs `/clear`.** Handoff+/Clean and the new-topic move write a handoff file first and then clear the chat. The new-topic move can be turned off in the plugin options (`autoFresh`); the threshold is `autoFreshPct`.
+- **Runs `/clear`.** Fresh chat and the new-topic move write a handoff file first and then clear the chat. The new-topic move can be turned off in the plugin options (`autoFresh`); the threshold is `autoFreshPct`.
+- **Changes the turn's effort.** With `autoEffort` on, the `turn.step` hook sends the main chat's requests at the level the planner picked (never above your own level unless `autoEffort` is 2). It never changes the main chat's model.
+- **Adds a reminder after a tool result.** In a Graft-indexed repo, at most one line per turn and three per chat, after a plain grep.
 - **Changes agent model.** The `agent.spawn` hook sets `model: haiku` on Explore agents and on agents for a Haiku-tier board card. It does not change permission modes, and it passes every other event on unchanged.
 - **Credentials.** It reads no keys or tokens. The only local reads are the project's `.claude/deck/` files and the tool output above.
 - **Install help.** The Install buttons in the savings pane only submit a prompt that names each tool, its source link and its steps. They run nothing themselves.

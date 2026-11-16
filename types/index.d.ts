@@ -22,6 +22,8 @@ export type Plan = {
   code?: boolean
   /** true when a step writes or edits a C# file; the Unity rules ride only in that case */
   csharp?: boolean
+  /** how hard the main model must think for the whole request; sent with the turn's requests when effort routing is on */
+  effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max'
   tasks: { title: string; tier: Tier; why: string; parallel: boolean }[]
 }
 
@@ -91,6 +93,8 @@ declare module 'claude-code' {
       min: Record<string, boolean>
       order: string[] | null
       history: Hist[]
+      arrange: boolean
+      effort: string
       rtk: { state: 'active' | 'inactive' | 'missing'; saved: number } | null
     }
   }
