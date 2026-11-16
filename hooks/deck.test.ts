@@ -1126,6 +1126,9 @@ test('fresh-eyes review: only a risky plan that changes code gets the step, and 
   expect(L.planContext(small)).not.toContain('Fresh-eyes')
   expect(L.withSmokeTask(small.tasks, true, true).at(-1)!.title).toBe(L.SMOKE_TITLE_UNITY)
   expect(L.PLANNER_SYSTEM).toContain('Write failing test for <the bug>')
+  // a snippet pasted into the chat has no file to edit: it is answered, not planned, and the answer carries no board lines
+  expect(L.PLANNER_SYSTEM).toContain('Code pasted into the message with no file named')
+  expect(L.HOUSE_SECTION).toContain('end a reply that changed files with a line')
 })
 
 test('Unity rules: the core always rides, a topic pack only when the work names it, and all of them add up to the full set', () => {
@@ -1443,7 +1446,7 @@ test('corrections: a typed correction is only offered as a rule; Save shows the 
   await ui.press({ key: 'rule-keep' })
   await tick()
   expect(kept()).toBe('- Write the type, never var.\n')
-  expect(await texts(ui)).not.toContain('Keep')
+  expect(await texts(ui)).not.toContain('Keep this rule') // (a tip may hold the plain word)
   // the same correction again: offered, but the file keeps one bullet
   await $.prompt.submit(human("No, don't use var here, always write the type"))
   await ui.press({ key: 'rule-yes' })
