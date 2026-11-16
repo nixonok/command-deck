@@ -947,13 +947,6 @@ export const unityOk = (text: unknown): boolean => {
     return false
   }
 }
-export type UnityLook = { state: 'idle' | 'compiling' | 'playing'; version: string; scene: string }
-/** What the pane shows of the editor, from its own state answer; null when the answer cannot be read. */
-export function unityLook(text: unknown): UnityLook | null {
-  const d = dataOf(text)
-  if (!d) return null
-  return { state: d.isPlaying === true ? 'playing' : d.isCompiling === true ? 'compiling' : 'idle', version: String(d.unityVersion ?? ''), scene: String(d.activeScene ?? '') }
-}
 /** The editor version a project is made with, from its ProjectSettings/ProjectVersion.txt ('' when it names none). */
 export const unityVersionOf = (file: string): string => /m_EditorVersion:\s*(\S+)/.exec(file)?.[1] ?? ''
 export const UNITY_PLAY_DENY = 'Unity is in Play mode. A C# edit now recompiles under the running game and can hang the editor. Ask the person to stop Play (or stop it yourself if they already agreed), then make this edit again.'
@@ -1014,17 +1007,83 @@ export function addRule(file: string, rule: string): string {
 }
 
 // ------------------------------------------------------------ dead weight
-// A skill's listing and a server's loaded tools are paid for in every chat, used or not. The deck notes when each was
-// last called in this project and shows the ones that were not, dearest first: a hint about what to turn off.
-export type Weight = { name: string; kind: 'skill' | 'mcp'; tokens: number }
+// A skill's listing and a server's loaded tools are paid for in every chat, used or not. The deck keeps a book per
+// project: when each was last called, what each costs, and the person's own choices. At the start of a chat the ones
+// nothing called for a while are left out of that chat (a skill's line leaves the listing, a server's tools go behind
+// search). Nothing is uninstalled: a skill still runs when typed, a tool still loads when asked for, and a call puts
+// the item back from the next chat on.
+export type WeightKind = 'skill' | 'mcp'
+export type WeightBook = {
+  /** when the deck began watching this project: nothing is called dead on less than `days` of watching */
+  since: number
+  /** key -> when it was last called here */
+  last: Record<string, number>
+  /** key -> its name as listed and what it costs in every chat */
+  cost: Record<string, { name: string; tokens: number }>
+  /** keys the person removed by hand: left out whatever the record says */
+  off: string[]
+  /** keys the person put back: never left out */
+  keep: string[]
+  /** the person's own on/off for removing by itself; absent means the plugin setting decides */
+  auto?: boolean
+}
+export const newBook = (now: number): WeightBook => ({ since: now, last: {}, cost: {}, off: [], keep: [] })
+/** A stored book made whole: one written by hand or by an older version may lack parts. */
+export function asBook(raw: unknown, now: number): WeightBook {
+  const b = (raw && typeof raw === 'object' ? raw : {}) as Partial<WeightBook>
+  const list = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [])
+  return {
+    since: typeof b.since === 'number' ? b.since : now,
+    last: b.last && typeof b.last === 'object' ? b.last : {},
+    cost: b.cost && typeof b.cost === 'object' ? b.cost : {},
+    off: list(b.off),
+    keep: list(b.keep),
+    ...(typeof b.auto === 'boolean' ? { auto: b.auto } : {}),
+  }
+}
 /** The name a use is filed under. A skill is called with or without its plugin's prefix ("ponytail:ponytail-audit", "ponytail-audit"), so only its own name counts; a server's whole name does. */
-export const useKey = (kind: Weight['kind'], name: unknown): string => `${kind}:${norm(kind === 'skill' ? (String(name ?? '').split(':').pop() ?? '') : String(name ?? ''))}`
-/** The listed items not called within `days`, dearest first. Items under `min` tokens are not worth a line. */
-export function deadWeight(items: Weight[], lastUse: Record<string, number>, now: number, days: number, min = 30): Weight[] {
-  const since = now - days * 86_400_000
-  return items
-    .filter(x => x.tokens >= min && (lastUse[useKey(x.kind, x.name)] ?? 0) < since)
-    .sort((a, b) => b.tokens - a.tokens)
+export const useKey = (kind: WeightKind, name: unknown): string => `${kind}:${norm(kind === 'skill' ? (String(name ?? '').split(':').pop() ?? '') : String(name ?? ''))}`
+const DAY_MS = 86_400_000
+/** Listed items nothing called within `days` (or since the watch began), dearest first; the person's kept ones and crumbs under `min` tokens are left out. */
+export function idleKeys(book: WeightBook, now: number, days: number, min = 30): string[] {
+  const since = now - days * DAY_MS
+  return Object.keys(book.cost)
+    .filter(k => book.cost[k]!.tokens >= min && (book.last[k] ?? 0) < since && !book.keep.includes(k))
+    .sort((a, b) => book.cost[b]!.tokens - book.cost[a]!.tokens)
+}
+/**
+ * The keys a new chat starts without. By hand: every key the person removed. By itself (`isAuto`): the idle ones,
+ * and only once the project was watched for `days`, so an item is never dropped on no evidence.
+ */
+export function pruneKeys(book: WeightBook, now: number, days: number, isAuto: boolean, min = 30): string[] {
+  const byHand = book.off.filter(k => !book.keep.includes(k))
+  const isWatched = now - book.since >= days * DAY_MS
+  const bySelf = isAuto && isWatched ? idleKeys(book, now, days, min) : []
+  return [...new Set([...byHand, ...bySelf])]
+}
+/** The keys the chat's first message names (the item's whole name, or a word of it four letters or longer): those stay in. */
+export function namedKeys(keys: string[], text: string): string[] {
+  const words = new Set(text.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean))
+  const flat = norm(text)
+  return keys.filter(k => {
+    const name = k.replace(/^(skill|mcp):/, '')
+    return (name.length >= 4 && flat.includes(name)) || name.split('_').some(w => w.length >= 4 && words.has(w))
+  })
+}
+/**
+ * The skill listing without the removed skills. An entry is a line that starts "- name: " and runs to the next such
+ * line; text before the first entry is kept. A listing in another shape matches nothing and comes back as it was.
+ */
+export function pruneListing(text: string, removed: ReadonlySet<string>): string {
+  if (!removed.size) return text
+  const out: string[] = []
+  let isDropping = false
+  for (const line of text.split('\n')) {
+    const name = /^- (\S+?): /.exec(line)?.[1]
+    if (name !== undefined) isDropping = removed.has(useKey('skill', name))
+    if (!isDropping) out.push(line)
+  }
+  return out.join('\n')
 }
 
 // ------------------------------------------------------------ stuck detector

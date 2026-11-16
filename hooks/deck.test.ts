@@ -1300,8 +1300,6 @@ test('effort record: turns and mean output per level, and a cheap level that ran
 test('verify gate in Unity: the deck asks for the compile, waits until the editor is idle, then reads the errors; clean is said only for a compile it asked for', async ($, on) => {
   expect([L.unityIsCompiling('{"success":true,"data":{"isCompiling":true}}'), L.unityIsCompiling('junk')]).toEqual([true, false])
   expect([L.unityOk('{"success":true,"data":{}}'), L.unityOk('{"success":false}'), L.unityOk(null)]).toEqual([true, false, false])
-  expect(L.unityLook('{"success":true,"data":{"isPlaying":false,"isCompiling":true,"unityVersion":"6000.3.28f1","activeScene":"SplashScene"}}')).toEqual({ state: 'compiling', version: '6000.3.28f1', scene: 'SplashScene' })
-  expect(L.unityLook('Multiple Unity instances found')).toBe(null)
   expect(L.unityVersionOf('m_EditorVersion: 6000.3.28f1\nm_EditorVersionWithRevision: 6000.3.28f1 (abc)')).toBe('6000.3.28f1')
   boot(on, UNITY)
   mock.store(on, {})
@@ -1338,7 +1336,7 @@ test('verify gate in Unity: the deck asks for the compile, waits until the edito
   })
   await $.session.start({ cwd: '/tmp/x', surface: null, isInteractive: false } as any)
   const ui = await $.ui.mount({ plugin: 'command-deck', surface: 'terminal', component: 'Pane', props: {}, requestId: 'command-deck' } as any)
-  expect(await texts(ui)).toContain('not checked in this chat')
+  expect(await texts(ui)).not.toContain('UNITY') // the editor has no section of its own: the verify mark carries the result
   const turn = async (file_path: string, playsAfter = false) => {
     calls = []
     await $.tool.call({ tool: 'Edit', file_path, old_string: 'a', new_string: 'b' } as any)
@@ -1373,20 +1371,18 @@ test('verify gate in Unity: the deck asks for the compile, waits until the edito
   expect(sent.length).toBe(1)
   expect(sent[0]).toContain('Unity compile errors')
   expect(sent[0]).toContain('CS0103: The name foo does not exist')
-  expect(await texts(ui)).toContain('✖ 1 errors')
+  expect(await texts(ui)).toMatch(/verify ✖/)
   // a compile the deck asked for, saw end and found no errors in: clean
   errors = CLEAN
   busyPolls = 0
   await turn('Assets/A.cs')
   await settle()
   expect(sent.length).toBe(1)
-  expect(await texts(ui)).toContain('✔ clean')
   expect(await texts(ui)).toMatch(/verify ✔/)
   // the refresh was not answered: no errors listed proves nothing, and the old tick does not stay
   canRefresh = false
   await turn('Assets/A.cs')
   await settle()
-  expect(await texts(ui)).toContain('not proven')
   expect(await texts(ui)).not.toMatch(/verify ✔/)
   // errors the editor lists are real whether or not the refresh was answered
   errors = ERRORS
@@ -1532,38 +1528,93 @@ test('Unity rules: the editor version is pinned, a scene or prefab step reads ba
   expect(L.planContext({ isClear: true, questions: [], prompt: 'p', csharp: true, tasks: [{ title: 'Fix score', tier: 'sonnet', why: '', parallel: false }] }, { unity: true, unityVersion: '6000.3.28f1' })).toContain('Unity 6000.3.28f1')
 })
 
-test('dead weight: skills and servers listed in every chat but not called here show dearest first, and leave once called', async ($, on) => {
+test('dead weight: idle skills and servers are left out when a chat starts, never on less than the set days of watching; a call, a name in the first message or Put back brings one back', async ($, on) => {
   const now = 1_791_868_793_562
   const day = 86_400_000
-  const items: L.Weight[] = [
-    { name: 'gsap-core', kind: 'skill', tokens: 120 },
-    { name: 'ponytail:ponytail-audit', kind: 'skill', tokens: 90 },
-    { name: 'unity', kind: 'mcp', tokens: 4000 },
-    { name: 'tiny', kind: 'skill', tokens: 5 },
-  ]
+  const book: L.WeightBook = {
+    since: now - 10 * day,
+    last: { 'mcp:unity': now - day, 'skill:ponytail_audit': now - 8 * day },
+    cost: {
+      'skill:gsap_core': { name: 'gsap-core', tokens: 120 },
+      'skill:ponytail_audit': { name: 'ponytail:ponytail-audit', tokens: 90 },
+      'skill:remotion_render': { name: 'remotion-render', tokens: 80 },
+      'mcp:unity': { name: 'unity', tokens: 4000 },
+      'mcp:easel': { name: 'easel', tokens: 700 },
+      'skill:tiny': { name: 'tiny', tokens: 5 },
+    },
+    off: [],
+    keep: [],
+  }
   expect(L.useKey('skill', 'ponytail:ponytail-audit')).toBe(L.useKey('skill', 'ponytail-audit'))
   expect(L.useKey('mcp', 'plugin:x:y')).not.toBe(L.useKey('mcp', 'y')) // a server is known by its whole name
-  expect(L.deadWeight(items, {}, now, 7).map(x => x.name)).toEqual(['unity', 'gsap-core', 'ponytail:ponytail-audit']) // dearest first, crumbs left out
-  expect(L.deadWeight(items, { 'mcp:unity': now - day, 'skill:ponytail_audit': now - 8 * day }, now, 7).map(x => x.name)).toEqual(['gsap-core', 'ponytail:ponytail-audit'])
-  expect(L.deadWeight([], {}, now, 7)).toEqual([])
-  boot(on, {}, { context: { breakdown: { mcpTools: [{ serverName: 'unity', tokens: 4000, isLoaded: true }, { serverName: 'graft', tokens: 900, isLoaded: true }], skills: { tokens: 210, skillFrontmatter: [{ name: 'gsap-core', tokens: 120 }, { name: 'docx', tokens: 90 }] } } } })
-  mock.store(on, {})
+  // dearest first; a recent call and a crumb are not dead
+  expect(L.idleKeys(book, now, 7)).toEqual(['mcp:easel', 'skill:gsap_core', 'skill:ponytail_audit', 'skill:remotion_render'])
+  expect(L.pruneKeys(book, now, 7, true)).toEqual(['mcp:easel', 'skill:gsap_core', 'skill:ponytail_audit', 'skill:remotion_render'])
+  expect(L.pruneKeys(book, now, 7, false)).toEqual([]) // switched off: nothing by itself
+  expect(L.pruneKeys({ ...book, since: now - 3 * day }, now, 7, true)).toEqual([]) // three days of watching proves nothing
+  expect(L.pruneKeys({ ...book, since: now - 3 * day, off: ['skill:gsap_core'] }, now, 7, false)).toEqual(['skill:gsap_core']) // by hand: at once
+  expect(L.pruneKeys({ ...book, keep: ['skill:gsap_core'], off: ['skill:gsap_core'] }, now, 7, true)).not.toContain('skill:gsap_core') // put back wins
+  expect(L.pruneKeys(L.newBook(now), now, 7, true)).toEqual([])
+  expect(L.asBook({ off: 'junk', last: null }, now)).toEqual(L.newBook(now)) // a broken book is read as an empty one
+  expect(L.namedKeys(['skill:remotion_render', 'skill:gsap_core', 'mcp:easel'], 'Render the Remotion promo again')).toEqual(['skill:remotion_render'])
+  expect(L.namedKeys(['skill:gsap_core'], '')).toEqual([])
+  const LISTING = 'The following skills are available:\n\n- gsap-core: Official GSAP skill\n- claude-api: Reference for the API\nTRIGGER when the prompt names Claude\n- ponytail:ponytail-audit: Quality audit: bugs\n- docx: Word files'
+  expect(L.pruneListing(LISTING, new Set(['skill:claude_api', 'skill:ponytail_audit']))).toBe('The following skills are available:\n\n- gsap-core: Official GSAP skill\n- docx: Word files') // a removed entry takes its own later lines with it
+  expect(L.pruneListing(LISTING, new Set())).toBe(LISTING)
+  expect(L.pruneListing('Skills: gsap-core, docx', new Set(['skill:gsap_core']))).toBe('Skills: gsap-core, docx') // an unknown shape is left as it was
+
+  const usage = { context: { breakdown: { mcpTools: [{ serverName: 'unity', tokens: 4000, isLoaded: true }, { serverName: 'easel', tokens: 700, isLoaded: true }, { serverName: 'graft', tokens: 900, isLoaded: true }], skills: { tokens: 300, skillFrontmatter: [{ name: 'gsap-core', tokens: 120 }, { name: 'remotion-render', tokens: 80 }, { name: 'docx', tokens: 90 }, { name: 'init', tokens: 60, source: 'built-in' }] } } } }
+  boot(on, {}, usage)
+  const store: Record<string, any> = { 'deck.weight': { '/tmp/x/.claude/deck': { ...book, last: { ...book.last, 'skill:docx': now - day } } } }
+  // a store of the test's own, so what the deck saved can be read back
+  on('store.get', (_: unknown, e: any) => ({ value: store[String(e.key ?? Object.values(e)[0])] }) as any)
+  on('store.set', (_: unknown, e: any) => {
+    store[String(e.key ?? Object.values(e)[0])] = e.value ?? Object.values(e)[1]
+    return { value: undefined } as any
+  })
   on('tool.call', () => ({ result: {} }) as any)
+  on('tool.describe', (_: unknown, e: any) => ({ description: e.description }) as any)
+  on('prompt.attachment', (_: unknown, e: any) => ({ text: e.text }) as any)
+  on('prompt.submit', (_: unknown, e: any) => ({ text: e.text }) as any)
+  on('model.complete', () => ({ value: { isAnswered: false, reason: 'timeout' } }) as any)
+  on('session.root', () => ({ value: '/tmp/x' }) as any)
   await $.session.start({ cwd: '/tmp/x', surface: null, isInteractive: false } as any)
   await tick()
   const ui = await $.ui.mount({ plugin: 'command-deck', surface: 'terminal', component: 'Pane', props: {}, requestId: 'command-deck' } as any)
-  await ui.press({ key: 'min-DEAD WEIGHT' }) // folded by default: the title line carries the total
-  const seen = await texts(ui)
-  expect(seen).toContain('4.2k tokens every chat')
-  expect(seen).toContain('gsap-core')
-  expect(seen).not.toContain('graft') // a tool the deck counts savings for is never called dead
-  expect(seen).toContain('since the deck began watching')
-  await $.tool.call({ tool: 'Skill', skill: 'gsap-core' } as any)
-  await $.tool.call({ tool: 'mcp__unity__unity_editor_state' } as any)
+  const saved = () => store['deck.weight']['/tmp/x/.claude/deck'] as L.WeightBook
+  const listing = async () => (await $.prompt.attachment({ type: 'skill_listing', text: '- gsap-core: GSAP\n- remotion-render: Export a video\n- docx: Word files', origin: { kind: 'engine' } } as any)).text
+  const isBehindSearch = async (tool: string) => (await $.tool.describe({ tool, description: 'd', provider: {} } as any)).isDeferred === true
+  // the title line stays short (it shares a row with the fold button), and the section is folded until opened
+  expect(await texts(ui)).toMatch(/DEAD WEIGHT {2}−\d+ \|/)
+  await ui.press({ key: 'min-DEAD WEIGHT' })
+  expect(await texts(ui)).toContain('Left out of this chat')
+  expect(await texts(ui)).not.toContain('init') // the engine's own skills are never weighed
+  // the first message names one of them: it stays in this chat
+  await $.prompt.submit(human('Render the Remotion promo again with the new logo'))
+  expect(await listing()).toBe('- remotion-render: Export a video\n- docx: Word files')
+  expect(await isBehindSearch('mcp__easel__chart')).toBe(true)
+  expect(await isBehindSearch('mcp__unity__unity_editor_state')).toBe(false)
+  // the chat's listing is fixed once sent: a later message naming a removed skill does not change it
+  await $.prompt.submit(human('Now animate the logo with gsap-core timelines'))
+  expect(await listing()).toBe('- remotion-render: Export a video\n- docx: Word files')
+  // Put back and Remove are for the next chat: this one's listing holds, the book changes
+  await ui.press({ key: 'weight-keep-skill:gsap_core' })
   await tick()
-  const after = await texts(ui)
-  expect(after).not.toContain('gsap-core')
-  expect(after).toContain('docx')
-  expect(after).toContain('90 tokens every chat')
+  expect(saved().keep).toEqual(['skill:gsap_core'])
+  expect(await texts(ui)).toContain('back next chat')
+  expect(await listing()).toBe('- remotion-render: Export a video\n- docx: Word files')
+  // a call is noted, so the item is not dead next time
+  await $.tool.call({ tool: 'mcp__easel__chart' } as any)
+  await tick()
+  expect(saved().last['mcp:easel']).toBeGreaterThan(now - 1000)
+  // switched off by the person: kept in the book, and the next chat leaves nothing out by itself
+  await ui.press({ key: 'weight-auto' })
+  await tick()
+  expect(saved().auto).toBe(false)
+  expect(await texts(ui)).toContain('Auto-remove is off')
   await ui.unmount()
+  await $.session.start({ cwd: '/tmp/x', surface: null, isInteractive: false } as any)
+  await tick()
+  expect(await listing()).toBe('- gsap-core: GSAP\n- remotion-render: Export a video\n- docx: Word files')
+  expect(await isBehindSearch('mcp__easel__chart')).toBe(false)
 })

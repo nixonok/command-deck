@@ -101,8 +101,10 @@ declare module 'claude-code' {
       effort: string
       rtk: { state: 'active' | 'inactive' | 'missing'; saved: number } | null
       hint: { text: string; before: string; dir: string; rule?: string } | null
-      unity: { state: 'idle' | 'compiling' | 'playing' | 'no answer' | ''; version: string; scene: string; compile: 'clean' | 'errors' | 'not proven' | ''; errors: string; at: number }
-      lastUse: Record<string, number>
+      weight: {
+        book: { since: number; last: Record<string, number>; cost: Record<string, { name: string; tokens: number }>; off: string[]; keep: string[]; auto?: boolean }
+        pruned: string[]
+      }
     }
   }
 }

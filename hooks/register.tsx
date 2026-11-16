@@ -45,12 +45,9 @@ const effortStatsA = atom({ plugin: 'command-deck', key: 'effortStats' } as cons
 // they pressed Save, shown before anything is kept
 type Hint = { text: string; before: string; dir: string; rule?: string }
 const hintA = atom({ plugin: 'command-deck', key: 'hint' } as const, null as Hint | null)
-// the Unity editor as last seen: only events the deck already has (an edit's Play check, the compile gate, a press)
-type UnityView = { state: L.UnityLook['state'] | 'no answer' | ''; version: string; scene: string; compile: 'clean' | 'errors' | 'not proven' | ''; errors: string; at: number }
-const NO_UNITY: UnityView = { state: '', version: '', scene: '', compile: '', errors: '', at: 0 }
-const unityA = atom({ plugin: 'command-deck', key: 'unity' } as const, NO_UNITY)
-// when each skill and MCP server was last called in this project (name -> time), for the dead-weight section
-const lastUseA = atom({ plugin: 'command-deck', key: 'lastUse' } as const, {} as Record<string, number>)
+// dead weight: this project's book, and the keys this chat started without (fixed for the chat, so the prompt cache holds)
+type WeightView = { book: L.WeightBook; pruned: string[] }
+const weightA = atom({ plugin: 'command-deck', key: 'weight' } as const, { book: L.newBook(0), pruned: [] } as WeightView)
 const LEARN = 'command-deck-learn'
 const CHOICES = ['Yes', 'No', 'Not sure']
 let fromPanel = false
@@ -213,15 +210,6 @@ async function askUnity($: any, input: Record<string, unknown>, waitMs: number, 
   }
 }
 
-/** Asks the editor how it is and keeps the answer for the pane. Null when it did not answer. */
-async function lookUnity($: any, isCounted = true): Promise<string | null> {
-  const text = await askUnity($, { tool: L.UNITY_STATE_TOOL }, 4000, isCounted)
-  const look = L.unityLook(text)
-  const at = await $.clock.now()
-  await update($, unityA, (u: UnityView) => (look ? { ...u, ...look, version: look.version || u.version, at } : { ...u, state: 'no answer' as const, at }))
-  return text
-}
-
 // Unity's own compiler, asked through the Unity MCP.
 // Contract: the deck asks for the compile itself (an editor in the background has not looked at the changed files),
 // waits until the editor is idle, then reads the errors. Invariants: 'clean' is said only for a compile the deck asked
@@ -230,7 +218,7 @@ async function lookUnity($: any, isCounted = true): Promise<string | null> {
 // would recompile under the running game); an editor that cannot be asked, or never goes idle, is 'unknown', never a
 // pass.
 async function unityCompile($: any): Promise<{ what: string; output: string } | 'clean' | 'unknown'> {
-  const state = await lookUnity($)
+  const state = await askUnity($, { tool: L.UNITY_STATE_TOOL }, 4000)
   if (state === null || L.unityIsPlaying(state)) return 'unknown'
   // proof that a compile ran: the refresh was answered, or its answer was lost to the script reload it started and
   // the editor was then seen compiling
@@ -240,7 +228,7 @@ async function unityCompile($: any): Promise<{ what: string; output: string } | 
   let idle = 0
   for (let wait = 1000; wait <= 10_000 && idle < 2; wait += 1000) {
     await $.clock.sleep(wait).catch(() => undefined)
-    const now = await lookUnity($, false)
+    const now = await askUnity($, { tool: L.UNITY_STATE_TOOL }, 4000, false)
     if (L.unityIsPlaying(now)) return 'unknown'
     if (L.unityIsCompiling(now)) isAsked = true
     idle = now !== null && !L.unityIsCompiling(now) ? idle + 1 : 0
@@ -266,10 +254,6 @@ async function runVerify($: any, isForced = false) {
       const wasCs = csEditedTurn
       csEditedTurn = false
       const compiled = isUnity && wasCs ? await unityCompile($) : 'unknown'
-      if (isUnity && wasCs) {
-        const at = await $.clock.now()
-        await update($, unityA, (u: UnityView) => ({ ...u, compile: typeof compiled === 'object' ? ('errors' as const) : compiled === 'clean' ? ('clean' as const) : ('not proven' as const), errors: typeof compiled === 'object' ? compiled.output : '', at }))
-      }
       let failure: { what: string; exitCode?: number; output: string } | null = typeof compiled === 'object' ? compiled : null
       const v = await verifyFor($)
       let isChecked = compiled !== 'unknown'
@@ -334,30 +318,53 @@ async function verifyFailed($: any, f: { what: string; exitCode?: number; output
   }
 }
 
-// ------------------------------------------------------------ dead weight, corrections, goal
-// a use is written once per name per chat: the store is touched a few times a session, not on every call
-// Writes go one at a time (each reads the store fresh, so none drops another's key) and under the project the call
-// was made in, even if the session has moved on by the time the write runs.
-const usedNow = new Set<string>()
-let useWrites: Promise<void> = Promise.resolve()
-function markUse($: any, key: string): Promise<void> {
-  if (usedNow.has(key)) return useWrites
-  usedNow.add(key)
+// The book is edited one write at a time (each reads the store fresh, so none drops another's change) and under the
+// project the edit was made in, even if the session has moved on by the time it runs.
+let bookWrites: Promise<void> = Promise.resolve()
+function editBook($: any, change: (b: L.WeightBook) => L.WeightBook): Promise<void> {
   const dir = DIR
-  useWrites = useWrites.then(async () => {
-    try {
-      const at = await $.clock.now()
-      const uses = ((await $.store.get('deck.lastUse')) as Record<string, Record<string, number>> | undefined) ?? {}
-      await $.store.set('deck.lastUse', { ...uses, [dir]: { ...uses[dir], [key]: at } })
-      if (dir === DIR) await update($, lastUseA, (m: Record<string, number>) => ({ ...m, [key]: at }))
-    } catch {
-      // the section is a hint: a lost mark is tried again on the next call
-      usedNow.delete(key)
-    }
+  bookWrites = bookWrites.then(async () => {
+    const all = ((await $.store.get('deck.weight')) as Record<string, unknown> | undefined) ?? {}
+    const next = change(L.asBook(all[dir], await $.clock.now()))
+    await $.store.set('deck.weight', { ...all, [dir]: next })
+    if (dir === DIR) await update($, weightA, (w: WeightView) => ({ ...w, book: next }))
   })
-  return useWrites
+  // a failed write must not block the ones behind it
+  const done = bookWrites
+  bookWrites = bookWrites.catch(() => undefined)
+  return done
 }
 
+// a use is written once per name per chat: the store is touched a few times a session, not on every call
+const usedNow = new Set<string>()
+function markUse($: any, key: string) {
+  if (usedNow.has(key)) return
+  usedNow.add(key)
+  // the section is a hint: a lost mark is tried again on the next call
+  void Promise.resolve($.clock.now())
+    .then((at: number) => editBook($, b => ({ ...b, last: { ...b.last, [key]: at } })))
+    .catch(() => usedNow.delete(key))
+}
+
+// What this chat starts without. Contract: decided once, at the start of the chat, and never changed during it (a
+// listing that changed mid-chat would rewrite the prompt cache). Invariants: nothing is left out by itself before the
+// project was watched for the set days; an item the person put back is never left out; one the first message names
+// stays in; a press in the pane changes the next chat, not this one.
+let prunedNow = new Set<string>()
+let isListingSent = false
+const weightDays = () => opt('deadWeightDays', 7)
+const isAutoPrune = (b: L.WeightBook) => b.auto ?? opt('deadWeightPrune', 1) > 0
+
+/** What the context lists now, as the book's cost table. An item this chat left out keeps its old entry: its cost reads zero only because it is out. */
+function costsOf(limits: Limits, was: L.WeightBook['cost']): L.WeightBook['cost'] {
+  const cost: L.WeightBook['cost'] = {}
+  for (const x of limits.skillCosts ?? []) cost[L.useKey('skill', x.name)] = { name: x.name, tokens: x.tokens }
+  for (const x of limits.servers ?? []) if (!L.KEEP_SERVERS.includes(L.norm(x.server))) cost[L.useKey('mcp', x.server)] = { name: x.server, tokens: x.loaded }
+  for (const k of prunedNow) if (was[k]) cost[k] = was[k]
+  return cost
+}
+
+// ------------------------------------------------------------ corrections, goal
 // Contract: a correction becomes a rule in two presses. The first drafts the rule and shows it; the second keeps
 // exactly the text shown. Invariants: nothing is written that the person did not see; one bullet per rule (a repeat
 // adds nothing); a model that fails or finds no rule shows the person's own words instead; the hint is gone after
@@ -441,7 +448,7 @@ async function save($: any) {
   }
 }
 
-const DEFAULT_ORDER = ['BOARD', 'BRIEF', 'UNITY', 'USAGE', 'MODELS', 'SAVED', 'WEIGHT', 'GIT', 'TIPS', 'HISTORY']
+const DEFAULT_ORDER = ['BOARD', 'BRIEF', 'USAGE', 'MODELS', 'SAVED', 'WEIGHT', 'GIT', 'TIPS', 'HISTORY']
 
 // the saved order, healed: unknown ids dropped, new ids appended, so an old layout never hides a section
 function fullOrder(saved: string[] | null): string[] {
@@ -478,21 +485,20 @@ async function load($: any) {
   isCavemanOff = false
   isUnity = await $.fs.exists(`${rootDir()}ProjectSettings/ProjectVersion.txt`).catch(() => false)
   unityVersion = isUnity ? L.unityVersionOf(await readFile($, `${rootDir()}ProjectSettings/ProjectVersion.txt`)) : ''
-  await update($, unityA, () => ({ ...NO_UNITY, version: unityVersion }))
   await update($, hintA, () => null)
   usedNow.clear()
-  const uses = ((await $.store.get('deck.lastUse').catch(() => undefined)) as Record<string, Record<string, number>> | undefined) ?? {}
-  // the first chat here starts the watch: an item is "not called" only since then
-  const mine = { ...uses[DIR], _since: uses[DIR]?._since ?? (await $.clock.now()) }
-  // queued behind any use still being written, so neither write drops the other
-  if (!uses[DIR]?._since) {
-    const dir = DIR
-    useWrites = useWrites.then(async () => {
-      const now = ((await $.store.get('deck.lastUse').catch(() => undefined)) as Record<string, Record<string, number>> | undefined) ?? {}
-      await $.store.set('deck.lastUse', { ...now, [dir]: { ...now[dir], _since: mine._since } }).catch(() => undefined)
-    })
+  isListingSent = false
+  {
+    const now = await $.clock.now()
+    const all = ((await $.store.get('deck.weight').catch(() => undefined)) as Record<string, unknown> | undefined) ?? {}
+    const book = L.asBook(all[DIR], now)
+    // the first chat here starts the watch
+    if (!all[DIR]) void editBook($, b => ({ ...b, since: now })).catch(() => undefined)
+    prunedNow = new Set(L.pruneKeys(book, now, weightDays(), isAutoPrune(book)))
+    // a removed server's tools wait behind search from the first request on
+    deferServers = new Set([...prunedNow].filter(k => k.startsWith('mcp:')).map(k => k.slice(4)))
+    await update($, weightA, () => ({ book, pruned: [...prunedNow] }))
   }
-  await update($, lastUseA, () => mine)
   guards = L.parseGuards(await readFile($, `${DIR}/guards.md`))
   projectNotes = L.projectSection(await readFile($, memoryFile()), await readFile($, `${DIR}/conventions.md`))
   rulesSent.clear()
@@ -584,7 +590,8 @@ async function applyUsage($: any, u: any) {
     servers = [...by.values()].sort((a, b) => b.tokens - a.tokens)
     skillTokens = bd.skills?.tokens
     skills = L.skillNames(bd.skills?.skillFrontmatter)
-    skillCosts = (bd.skills?.skillFrontmatter ?? []).map((x: any) => ({ name: String(x.name), tokens: Number(x.tokens) || 0 }))
+    // the engine's own skills are not the person's to switch off, so they are never weighed
+    skillCosts = (bd.skills?.skillFrontmatter ?? []).filter((x: any) => x.source !== 'built-in').map((x: any) => ({ name: String(x.name), tokens: Number(x.tokens) || 0 }))
   }
   await update($, limitsA, () => ({
     parts,
@@ -599,6 +606,11 @@ async function applyUsage($: any, u: any) {
     ctxPct: ctx.percent ?? (ctx.tokens && ctx.window ? (ctx.tokens / ctx.window) * 100 : 0),
     usd: u.cost?.usd,
   }))
+  if (bd) {
+    const { book } = await read($, weightA)
+    const cost = costsOf(await read($, limitsA), book.cost)
+    if (JSON.stringify(cost) !== JSON.stringify(book.cost)) void editBook($, b => ({ ...b, cost: costsOf({ skillCosts, servers, ctxWindow: 0, ctxPct: 0 }, b.cost) })).catch(() => undefined)
+  }
 }
 
 async function refreshUsage($: any) {
@@ -925,7 +937,7 @@ async function decideTools($: any, text: string) {
     sv => !L.KEEP_SERVERS.includes(L.norm(sv.server)) && !needed.has(L.norm(sv.server)) && !usedServers.has(L.norm(sv.server)) && !lower.includes(sv.server.toLowerCase()) && !lower.includes(L.norm(sv.server).replace(/_/g, ' ')),
   )
   if (!off.length) return
-  deferServers = new Set(off.map(sv => L.norm(sv.server)))
+  deferServers = new Set([...deferServers, ...off.map(sv => L.norm(sv.server))])
   const tokens = off.reduce((n, sv) => n + sv.tokens, 0)
   await addSaving('tools', tokens, $)
   $.ui.toast(`Smart tools: ${off.length} MCP server${off.length === 1 ? '' : 's'} moved behind search (about ${L.compact(tokens)} tokens). /command-deck tools off undoes it.`)
@@ -1403,6 +1415,17 @@ export const register: Register = (on, options) => {
     isTurnLive = true
     graftUsedTurn = false
     graftNudgedTurn = false
+    if (!isListingSent && prunedNow.size && HUMAN.has(String(e.origin?.kind)) && !e.text.startsWith('/')) {
+      // what the chat's first message names is wanted in this chat, whatever the record says
+      const named = L.namedKeys([...prunedNow], e.text)
+      if (named.length) {
+        for (const k of named) {
+          prunedNow.delete(k)
+          if (k.startsWith('mcp:')) deferServers.delete(k.slice(4))
+        }
+        await update($, weightA, (w: WeightView) => ({ ...w, pruned: [...prunedNow] })).catch(() => undefined)
+      }
+    }
     if (!e.text.startsWith('/')) await decideTools($, e.text).catch(() => undefined)
     const added = [...(planned ? [planned] : [])]
     if (HUMAN.has(String(e.origin?.kind)) && !e.text.startsWith('/')) {
@@ -1497,8 +1520,14 @@ export const register: Register = (on, options) => {
 
   // a skill run from a slash command never passes the Skill tool: this is where both kinds are seen
   on('skill.prompt', async ($, e, next) => {
-    void markUse($, L.useKey('skill', e.skill))
+    markUse($, L.useKey('skill', e.skill))
     return next(e)
+  })
+
+  // the skills this chat starts without leave the listing the model reads; each still runs when typed by name
+  on('prompt.attachment', { type: 'skill_listing' }, async ($, e, next) => {
+    isListingSent = true
+    return next(prunedNow.size ? { ...e, text: L.pruneListing(e.text, prunedNow) } : e)
   })
 
   // Compaction: the summary is told what to keep when nobody said, and what the deck gave the main chat once (the
@@ -1542,7 +1571,7 @@ export const register: Register = (on, options) => {
       const now = await $.clock.now()
       if (now - playClearAt > 15_000) {
         // an editor that does not answer in time is not held to be playing: the edit goes through
-        const state = await lookUnity($)
+        const state = await askUnity($, { tool: L.UNITY_STATE_TOOL }, 4000)
         if (state !== null && L.unityIsPlaying(state)) return { deny: L.UNITY_PLAY_DENY } as never
         if (state !== null) playClearAt = now
       }
@@ -1585,9 +1614,9 @@ export const register: Register = (on, options) => {
     if (srv) {
       usedServers.add(L.norm(srv))
       deferServers.delete(L.norm(srv))
-      void markUse($, L.useKey('mcp', srv))
+      markUse($, L.useKey('mcp', srv))
     }
-    if (tool === 'Skill') void markUse($, L.useKey('skill', args.skill))
+    if (tool === 'Skill') markUse($, L.useKey('skill', args.skill))
     const res = await next(e)
     if (created) {
       // Claude Code numbers its tasks 1, 2, 3 in creation order, and says so in the result
@@ -1754,7 +1783,7 @@ export const register: Register = (on, options) => {
   // pane holds at any width and in a proportional font, where a row of block characters did not.
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Text, Button } = $.ui.resolve(e)
-    const [tasks, usage, savings, git, limits, frame, tip, goal, pending, draft, mins, savedOrder, hist, answered, rtk, isArranging, effort, verify, effortStats, hint, unity, lastUse] = await Promise.all([
+    const [tasks, usage, savings, git, limits, frame, tip, goal, pending, draft, mins, savedOrder, hist, answered, rtk, isArranging, effort, verify, effortStats, hint, weight] = await Promise.all([
       read($, tasksA),
       read($, usageA),
       read($, savingsA),
@@ -1775,8 +1804,7 @@ export const register: Register = (on, options) => {
       read($, verifyA),
       read($, effortStatsA),
       read($, hintA),
-      read($, unityA),
-      read($, lastUseA),
+      read($, weightA),
     ])
     const Input = ($.ui.resolve(e) as any).Input as ((p: Record<string, unknown>) => any) | undefined
     const now = await $.clock.now()
@@ -1873,7 +1901,8 @@ export const register: Register = (on, options) => {
       return (
         <Box key={`win-${title}`} flexDirection="column" borderStyle="round" borderColor={color} borderDimColor={isMin} paddingX={1}>
           <Box justifyContent="space-between" gap={1}>
-            <Box flexGrow={1} flexShrink={1}>
+            {/* zero width that grows: the title takes only the room the buttons leave, and is cut short, never the buttons */}
+            <Box width={0} flexGrow={1} overflow="hidden">
               <Text bold color={color} wrap="truncate-end">
                 {icon} {title}
                 {note ? <Text dimColor>{`  ${note}`}</Text> : null}
@@ -2387,80 +2416,70 @@ export const register: Register = (on, options) => {
         )
       : null
 
-    // ---------------- Unity: the editor as last seen (asked only at an edit, a compile check or a press, never on a timer)
-    const ago = (at: number) => (at ? (now - at < 60_000 ? 'just now' : `${Math.floor((now - at) / 60_000)} min ago`) : '')
-    const unityWin = isUnity
-      ? win(
-          '◈',
-          'UNITY',
-          'blue',
-          <Box flexDirection="column">
-            {field('Editor', [unity.version, unity.state || 'not asked yet', unity.scene].filter(Boolean).join(' · '), unity.state === 'playing' ? 'yellow' : unity.state === 'no answer' ? 'red' : undefined)}
-            {field('Compile', unity.compile ? `${unity.compile === 'clean' ? '✔ clean' : unity.compile === 'errors' ? `✖ ${unity.errors.split('\n').length} errors` : 'not proven (editor busy or silent)'}` : 'not checked in this chat', unity.compile === 'clean' ? 'green' : unity.compile === 'errors' ? 'red' : undefined)}
-            {unity.errors ? (
-              <Text color="red" wrap="wrap">
-                {unity.errors.split('\n').slice(0, 3).map(l => L.clip(l, 200)).join('\n')}
-              </Text>
-            ) : null}
-            <Box gap={1} flexWrap="wrap">
-              <Button key="unity-look" label="↻ Ask editor" onPress={() => void lookUnity($, false)} />
-              <Button
-                key="unity-compile"
-                label="Compile now"
-                onPress={() => {
-                  csEditedTurn = true
-                  void runVerify($, true).catch(() => undefined)
-                }}
-              />
-            </Box>
-          </Box>,
-          ago(unity.at),
-          'UNITY',
-        )
-      : null
-
-    // ---------------- dead weight: what every chat here pays for and nothing called
-    const weightDays = opt('deadWeightDays', 7)
-    const dead = L.deadWeight(
-      [
-        ...(limits.skillCosts ?? []).map(x => ({ name: x.name, kind: 'skill' as const, tokens: x.tokens })),
-        ...(limits.servers ?? []).filter(x => !L.KEEP_SERVERS.includes(L.norm(x.server))).map(x => ({ name: x.server, kind: 'mcp' as const, tokens: x.loaded })),
-      ],
-      lastUse,
-      now,
-      weightDays,
-    )
-    const deadTokens = dead.reduce((sum, x) => sum + x.tokens, 0)
-    const watchedDays = Math.floor((now - (lastUse._since ?? now)) / 86_400_000)
-    const weightWin = dead.length
-      ? win(
-          '⚖',
-          'DEAD WEIGHT',
-          'red',
-          <Box flexDirection="column">
-            {dead.slice(0, 8).map(x => (
-              <Box key={`dead-${x.kind}-${x.name}`} gap={1}>
-                <Box flexGrow={1} flexShrink={1}>
-                  <Text wrap="truncate-end">
-                    {x.name} <Text dimColor>{x.kind}</Text>
-                  </Text>
-                </Box>
-                <Box flexShrink={0}>
-                  <Text bold>{L.compact(x.tokens)}</Text>
-                </Box>
-              </Box>
-            ))}
-            {dead.length > 8 ? <Text dimColor>{`  … ${dead.length - 8} more`}</Text> : null}
-            <Text dimColor wrap="wrap">
-              {watchedDays < weightDays
-                ? `Listed in every chat, not called here since the deck began watching (${watchedDays} d ago). Trust the list after ${weightDays} days.`
-                : `Listed in every chat, not called here in ${weightDays} days. Turn off what this project does not need and every chat starts smaller.`}
+    // ---------------- dead weight: what this chat started without, and what sits idle; a press changes the next chat
+    const { book } = weight
+    const isAuto = isAutoPrune(book)
+    const costOf = (k: string) => book.cost[k] ?? { name: k.replace(/^(skill|mcp):/, ''), tokens: 0 }
+    const removed = weight.pruned
+    const idle = L.idleKeys(book, now, weightDays()).filter(k => !removed.includes(k))
+    const sumOf = (keys: string[]) => keys.reduce((sum, k) => sum + costOf(k).tokens, 0)
+    const daysLeft = Math.max(0, Math.ceil(weightDays() - (now - book.since) / 86_400_000))
+    const setChoice = (k: string, list: 'off' | 'keep') =>
+      void editBook($, b => ({ ...b, off: [...b.off.filter(x => x !== k), ...(list === 'off' ? [k] : [])], keep: [...b.keep.filter(x => x !== k), ...(list === 'keep' ? [k] : [])] })).catch(() => undefined)
+    const weightRow = (k: string, isRemoved: boolean) => {
+      const c = costOf(k)
+      // a press is for the next chat; until then the row says what will happen instead of offering it again
+      const isChanged = isRemoved ? book.keep.includes(k) : book.off.includes(k)
+      return (
+        <Box key={`weight-${k}`} gap={1}>
+          <Box width={0} flexGrow={1} overflow="hidden">
+            <Text wrap="truncate-end" dimColor={isRemoved}>
+              {c.name} <Text dimColor>{k.startsWith('mcp:') ? 'mcp' : 'skill'}</Text>
             </Text>
-          </Box>,
-          `${L.compact(deadTokens)} tokens every chat`,
-          'WEIGHT',
-        )
-      : null
+          </Box>
+          <Box flexShrink={0} gap={1}>
+            <Text bold>{L.compact(c.tokens)}</Text>
+            {isChanged ? (
+              <Text dimColor>{isRemoved ? 'back next chat' : 'out next chat'}</Text>
+            ) : isRemoved ? (
+              <Button key={`weight-keep-${k}`} label="Put back" onPress={() => setChoice(k, 'keep')} />
+            ) : (
+              <Button key={`weight-off-${k}`} label="Remove" onPress={() => setChoice(k, 'off')} />
+            )}
+          </Box>
+        </Box>
+      )
+    }
+    const weightWin =
+      removed.length || idle.length
+        ? win(
+            '⚖',
+            'DEAD WEIGHT',
+            'red',
+            <Box flexDirection="column">
+              <Box gap={1} flexWrap="wrap">
+                <Button key="weight-auto" label={isAuto ? 'Auto-remove: on' : 'Auto-remove: off'} onPress={() => void editBook($, b => ({ ...b, auto: !isAutoPrune(b) })).catch(() => undefined)} />
+              </Box>
+              {removed.length ? <Text bold>{`▍Left out of this chat  ${L.compact(sumOf(removed))} tokens`}</Text> : null}
+              {removed.slice(0, 8).map(k => weightRow(k, true))}
+              {removed.length > 8 ? <Text dimColor>{`  … ${removed.length - 8} more`}</Text> : null}
+              {idle.length ? <Text bold>{`▍Idle, still listed  ${L.compact(sumOf(idle))} tokens`}</Text> : null}
+              {idle.slice(0, 8).map(k => weightRow(k, false))}
+              {idle.length > 8 ? <Text dimColor>{`  … ${idle.length - 8} more`}</Text> : null}
+              <Text dimColor wrap="wrap">
+                {!isAuto
+                  ? 'Auto-remove is off: only what you remove by hand is left out.'
+                  : daysLeft > 0
+                    ? `Watching this project: idle items are left out by themselves in ${daysLeft} d. Remove takes one out from the next chat.`
+                    : `Not called here in ${weightDays()} days: left out when a chat starts. A call, or naming it in the first message, brings it back.`}
+                {' Nothing is uninstalled; a skill still runs when you type it.'}
+              </Text>
+            </Box>,
+            // short on purpose: the title line is cut before it can reach the fold button
+            removed.length ? `−${L.compact(sumOf(removed))}` : `${L.compact(sumOf(idle))} idle`,
+            'WEIGHT',
+          )
+        : null
 
     // ---------------- history: everything finished, newest first, kept across /clear
     const stamp = (at: number) => new Date(at).toISOString().slice(5, 16).replace('T', ' ')
@@ -2524,7 +2543,6 @@ export const register: Register = (on, options) => {
       TIPS: tipWin,
       BRIEF: goalWin,
       HISTORY: histWin,
-      UNITY: unityWin,
       WEIGHT: weightWin,
     }
     for (const id of order) if (parts[id]) visible.push(id)

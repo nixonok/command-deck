@@ -45,7 +45,6 @@ It is my one-shot attempt to put most of what I know about saving tokens and cos
 - **Project notes in every chat.** A new chat starts with the newest lasting facts and `.claude/deck/conventions.md` (`/command-deck conventions` has the model scan the project and write it).
 - **Save as rule.** When a typed message reads like a correction, the pane offers "Save as rule". That drafts a one-line rule and shows it; "Keep" writes exactly that text to `.claude/deck/conventions.md`. Nothing is kept without both presses.
 - **Unity.** The Unity rules are a core plus topic packs (UI, performance, tweens, hierarchy, game doc) picked by the words of the step, so a small fix pays for about half of them. A subagent that touches C# gets them in its own prompt from the deck, not pasted by the main chat. With the Unity MCP connected, a C# edit is refused while the editor is in Play mode. After a C# edit the deck asks the editor to refresh, waits until it is idle, then sends any compile errors back to the model. "Clean" shows only for a compile the deck asked for and saw finish. A C# plan's smoke card asks for a clean compile and passing EditMode tests.
-- **Unity pane section.** In a Unity project the pane shows the editor version, state (idle, compiling or playing), scene and last compile result, with "Ask editor" and "Compile now" buttons.
 - **Unity rule lines.** Short rules for pinning the editor version, reading a scene or prefab value back after writing it, and ending gameplay work with an exact Play check.
 - **Project memory.** Each handoff also gathers up to three lasting facts (a command that works, a trap, a decision) into `.claude/deck/memory.md`, and every later handoff carries them.
 - **Handoff memory.** Writes a handoff note and starts a fresh chat at a context % you choose, or on a new topic.
@@ -54,7 +53,7 @@ It is my one-shot attempt to put most of what I know about saving tokens and cos
 - **Savings counter.** Estimated tokens and dollars saved per tool (Graft, Caveman, Optimizer, RTK, Ponytail, Graphify). Every tool keeps its row and a plain state: ● on, ◐ installed but not running, ○ not installed.
 - **Work until done.** When the plan brief says when the work is done, the Plan brief section shows a "Work until done" button. The button hands that line to Claude Code's own `/goal`.
 - **Compaction.** When the chat is compacted, the summary is told to keep the goal, rules, decisions and open tasks. File-type rules are given again on the next edit.
-- **Dead weight.** The Dead weight section lists skills and MCP servers that every chat loads but this project has not called for 7 days, dearest first, with the tokens each one costs in every chat.
+- **Dead weight.** The deck notes when each skill and MCP server was last called in this project. One that nothing called for 7 days is left out when a chat starts: the skill's line leaves the listing the model reads, the server's tools go behind search. Nothing is uninstalled, a skill still runs when you type it, and a call, or naming it in the chat's first message, brings it back. Nothing is left out before the project was watched for those 7 days. The Dead weight section shows what this chat left out and what sits idle, with Put back and Remove on each row and one Auto-remove switch. A press changes the next chat, not the running one, so the prompt cache holds.
 - **Version in the header.** The pane header shows the running version in gray.
 
 ### The pane
@@ -81,7 +80,6 @@ The savings counter estimates what Graft, the optimizer, Graphify, Ponytail, cav
 
 <p align="center"><img src="assets/savings.png" alt="Token saved today panel with estimated tokens and dollars per source" width="420"></p>
 
-<!-- TODO screenshot: assets/unity.png (Unity section) -->
 <!-- TODO screenshot: assets/weight.png (Dead weight section) -->
 
 ## Install
@@ -172,7 +170,8 @@ Change a value in any of these ways:
 | `briefReports` | 1 | Ask every subagent for a tight final report. 0 is off. |
 | `unityPlayGuard` | 1 | Refuse a C# edit while the Unity editor is in Play mode. 0 is off. |
 | `learnRules` | 1 | Offer "Save as rule" when a typed message reads like a correction. 0 is off. |
-| `deadWeightDays` | 7 | Days a skill or MCP server must go uncalled in this project before the Dead weight section lists it. |
+| `deadWeightPrune` | 1 | Leave idle skills and MCP servers out of new chats by itself. 0 only lists them; what you remove by hand is still left out. |
+| `deadWeightDays` | 7 | Days a skill or MCP server must go uncalled in this project to count as dead weight. Also how long a project is watched before anything is left out. |
 | `saveModePct` | 80 | Past this percent of the 5-hour or weekly limit, effort routing sends nothing above medium. 0 is off. |
 | `reducedMotion` | 0 | 1 holds the Doing-card bots still (terminals have no reduced-motion setting). |
 | `coldGuard` | 1 | 0 off, 1 warn, 2 also hold the first send. |
@@ -213,7 +212,7 @@ Only under `.claude/deck/` in your project: `rules.md` (your rules for new chats
 
 Every savings row shows its tool's state. Graft and token-optimizer count as installed when their MCP servers are connected (the Graft skill without its server reads Not Active). Graft also counts as on in any repo that has its index (`graft/INDEX.md`), since its CLI works without the server. Caveman is part of the deck and needs nothing installed. Ponytail and Graphify count as installed when the chat lists their skills (or the Graphify MCP server); Their figures are estimates. RTK's row comes from `rtk gain` (today's saved tokens) and `rtk verify` (Not Active when its Claude Code hook is not registered).
 
-The Unity checks (Play mode guard, compile gate and the Unity pane section) need a Unity MCP whose tools are named `mcp__unity__unity_editor_state`, `mcp__unity__unity_get_compilation_errors` and `mcp__unity__unity_execute_menu_item`. With another Unity MCP these checks stay off.
+The Unity checks (Play mode guard and compile gate) need a Unity MCP whose tools are named `mcp__unity__unity_editor_state`, `mcp__unity__unity_get_compilation_errors` and `mcp__unity__unity_execute_menu_item`. With another Unity MCP these checks stay off.
 
 The board follows the chat's own task list: new tasks from `TodoWrite` or `TaskCreate` (or `Todo:` lines in a reply) become cards, and a card moves to Doing or Done when its task is started or completed (or a `Done:` line names it; a `Skip:` line closes it as skipped). Every subagent shows as its own card.
 

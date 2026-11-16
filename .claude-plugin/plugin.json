@@ -65,10 +65,16 @@
       "description": "When a typed message reads like a correction, the pane offers Save as rule. Nothing is kept unless you press it; saved rules go to .claude/deck/conventions.md and ride in every new chat.",
       "default": 1
     },
+    "deadWeightPrune": {
+      "type": "number",
+      "title": "Dead weight: leave idle skills and servers out of new chats (1 on, 0 off)",
+      "description": "A skill or MCP server nothing called in this project for the set days is left out when a chat starts: the skill's line leaves the listing, the server's tools go behind search. Nothing is uninstalled, a call brings it back, and the Dead weight section shows and undoes each one.",
+      "default": 1
+    },
     "deadWeightDays": {
       "type": "number",
       "title": "Dead weight: days without a call",
-      "description": "Skills and MCP servers listed in every chat but not called in this project for this many days show in the Dead weight section.",
+      "description": "A skill or MCP server listed in every chat but not called in this project for this many days counts as dead weight. Nothing is left out before the project was watched this long.",
       "default": 7
     },
     "briefReports": {
