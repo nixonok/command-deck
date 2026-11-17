@@ -136,6 +136,9 @@ test('fresh gate: only a typed, non-slash message while nothing runs starts the 
   expect(L.freshGate({ ...base, isBusy: true })).toBe(false)
   expect(L.freshGate({ ...base, text: '/command-deck' })).toBe(false)
   expect(L.freshGate({ ...base, text: '   ' })).toBe(false)
+  // a moved message is sent again by the deck, and a plugin's own prompt cannot carry images: it stays in this chat
+  expect(L.freshGate({ ...base, media: 2 })).toBe(false)
+  expect(L.freshGate({ ...base, media: 0 })).toBe(true)
 })
 
 test('clip keeps the head and the tail, where an answer puts its fix list', () => {

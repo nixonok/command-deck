@@ -1464,7 +1464,8 @@ export const register: Register = (on, options) => {
       }
     }
     const isBusy = isTurnLive || isRunning || isCompacting || agentTask.size > 0
-    if (L.freshGate({ isDue: isFreshDue, isHuman: HUMAN.has(String(e.origin?.kind)), text: e.text, isBusy })) {
+    const media = Array.isArray(e.attachments) ? e.attachments.length : 0
+    if (L.freshGate({ isDue: isFreshDue, isHuman: HUMAN.has(String(e.origin?.kind)), text: e.text, isBusy, media })) {
       const carry = e.text
       isCompacting = true
       $.clock.after(100, () => {
@@ -1479,6 +1480,7 @@ export const register: Register = (on, options) => {
       })
       return { drop: 'Context is big: moving to a fresh chat with a handoff. Your message goes with it.' }
     }
+    if (isFreshDue && media && !isBusy && HUMAN.has(String(e.origin?.kind))) $.ui.toast('Images attached, so this message stays in this chat. The fresh chat starts on your next message.')
     const limit = opt('handoffTurns', 12)
     if (limit > 0 && !isNudged && !e.text.startsWith('/') && e.text.length > 40) {
       try {
@@ -1487,7 +1489,8 @@ export const register: Register = (on, options) => {
           const kind = await $.model.classify(e.text, ['continues the current work', 'starts a new feature or topic'], { model: 'haiku' })
           if (kind === 'starts a new feature or topic') {
             isNudged = true
-            if (opt('autoFresh', 1) > 0) {
+            // a message with images is not moved (see freshGate): it gets the hint instead
+            if (opt('autoFresh', 1) > 0 && !media) {
               const carry = e.text
               $.clock.after(100, () => void fresh($, carry).then(t => $.ui.toast(t)))
               return { drop: 'New topic after a long chat: moving to a fresh chat with a handoff. Your message goes with it.' }

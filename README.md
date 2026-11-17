@@ -163,7 +163,7 @@ Change a value in any of these ways:
 
 | Option | Default | Meaning |
 |---|---|---|
-| `autoFreshPct` | 50 | Past this context %, your next message writes a handoff, clears the chat and goes to the fresh chat. Never mid-turn. 0 is off. |
+| `autoFreshPct` | 50 | Past this context %, your next message writes a handoff, clears the chat and goes to the fresh chat. Never mid-turn, and never on a message with images (they cannot be carried over, so it waits for the next one). 0 is off. |
 | `autoCompactPct` | 0 | Compact at this context % when handoff is off. |
 | `autoFresh` | 1 | Move to a new chat when a long chat starts a new topic. |
 | `handoffTurns` | 12 | Suggest a handoff after this many prompts. |

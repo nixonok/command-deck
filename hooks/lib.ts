@@ -691,9 +691,13 @@ export function freshPrompt(path: string, carry?: string): string {
     : `Read ${path}. In a few lines, give me the main points of the last answer and where things stand, then wait for me. Do not start any task.`
 }
 
-/** A due fresh chat starts only on a typed message while nothing runs, so it never cuts work or an unread answer. */
-export function freshGate(a: { isDue: boolean; isHuman: boolean; text: string; isBusy: boolean }): boolean {
-  return a.isDue && a.isHuman && !a.isBusy && !a.text.trim().startsWith('/') && a.text.trim().length > 0
+/**
+ * A due fresh chat starts only on a typed message while nothing runs, so it never cuts work or an unread answer.
+ * Never on a message with attachments: the deck sends the moved message again itself, and a plugin's own prompt cannot
+ * carry images, so they would be lost. That message stays in this chat and the move waits for the next one.
+ */
+export function freshGate(a: { isDue: boolean; isHuman: boolean; text: string; isBusy: boolean; media?: number }): boolean {
+  return a.isDue && a.isHuman && !a.isBusy && !a.media && !a.text.trim().startsWith('/') && a.text.trim().length > 0
 }
 
 export function handoffMarkdown(args: {
