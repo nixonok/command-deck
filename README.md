@@ -64,25 +64,33 @@ The header holds Fresh chat and Arrange, and one line that reads at a glance: co
 
 A bar is a row of cells. Each cell is a box the layout sizes, holding one block glyph, so a bar is always one line and always spans its full width, at any window size and in any font. The pane's column count only decides how many cells a bar has. Every meter has its own colour (5-hour, Week, Context, and each model); for a limit, the percent turns yellow, then red, as it nears the top.
 
-The pictures below are from 1.4; the layout has since changed as described here. New ones for 1.7.0 are pending.
-
-<p align="center"><img src="assets/header.png" alt="Command Deck header" width="420"></p>
+<p align="center"><img src="assets/header.png" alt="Command Deck header with version, Fresh chat, Arrange and the status line" width="420"></p>
 
 The board follows the plan, every subagent and the chat's own task list. Each subagent gets a card (the step its description names, or a new one) that is DOING while it runs and DONE when it returns. The main chat closes a card with `TodoWrite` or `TaskUpdate`, or, where it has no task tools, with a `Done: <title>` line in its reply (`Todo: <title>` adds one, `Skip: <title>` closes one dropped on purpose as skipped, shown grey in DONE). A plan that changes no code (release notes, research) gets no smoke test card. DOING means work is live: a card the main chat only touched goes back to TODO when its turn ends. When an answer leaves cards in TODO without those lines, a small Haiku call reads the answer and closes the ones it says are done or dropped; cards it is unsure of stay open.
 
 Above the lanes a bar shows the whole board: one colored stretch per card, in the same color as the mark on that card's row. Done is solid, the running stretch shimmers (a highlight sweeps across it; held lit with `reducedMotion`), a failed card is red, skipped cards are left out, and the percent warms from red to green.
 
-<p align="center"><img src="assets/board.png" alt="Kanban board with TODO, DOING and DONE lanes, each task tagged Haiku or Sonnet" width="420"></p>
+<p align="center"><img src="assets/board.png" alt="Board with its progress bar and done cards, each tagged Haiku or Sonnet" width="420"></p>
+
+The Plan brief section shows the brief the planner wrote for the request: the goal, and when the work counts as done.
+
+<p align="center"><img src="assets/plan.png" alt="Plan brief with goal, definition of done and the Work until done button" width="420"></p>
 
 Usage shows the 5-hour and weekly limits, the context bar and the cache state. `contextBreakdown` splits the context bar by what fills it. Models today has a row for Haiku, Sonnet and Opus, and for Fable once it has tokens.
 
-<p align="center"><img src="assets/usage.png" alt="Usage panel with limits, context breakdown and cache status" width="420"></p>
+<p align="center"><img src="assets/usage.png" alt="Usage panel with limits, context, cache and effort, and the Models today panel" width="420"></p>
 
 The savings counter estimates what Graft, the optimizer, Graphify, Ponytail, caveman mode and Command Deck itself kept out of the context. The Deck row is Command Deck's own part (routing, fresh chats, keep-warm, smart tools). The last row is the total of every row above, an educated guess like the rows it adds up.
 
 <p align="center"><img src="assets/savings.png" alt="Token saved today panel with estimated tokens and dollars per source" width="420"></p>
 
-<!-- TODO screenshot: assets/weight.png (Dead weight section) -->
+Dead weight lists the skills and MCP servers nothing has called, with what each costs in every chat.
+
+<p align="center"><img src="assets/weight.png" alt="Dead weight panel listing idle skills and MCP servers with a Remove button each" width="420"></p>
+
+History keeps finished cards across chats.
+
+<p align="center"><img src="assets/history.png" alt="History panel with finished cards, time and model tier" width="420"></p>
 
 ## Install
 
