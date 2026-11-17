@@ -62,6 +62,11 @@ let isCompacting = false
 let isFreshDue = false
 // the main agent's last reply, kept for the handoff because a clear wipes it from the screen
 let lastAnswer = ''
+// carry on: the deck's own sends since the last typed message, the open cards at the last send, and the run's notes
+// file; a typed message starts a new one (the object is replaced, so work begun for the old run can tell it is stale)
+type Run = { sent: number; stalled: number; open: number; steps: number; notes: string; isWrapUp: boolean; isOver: boolean }
+const newRun = (): Run => ({ sent: 0, stalled: 0, open: 0, steps: 0, notes: '', isWrapUp: false, isOver: false })
+let run = newRun()
 // prompt cache: estimated from the clock (the server is never asked), see lib.ts coldCheck
 let lastTouch = 0
 let lastReal = 0
@@ -697,12 +702,30 @@ async function projectName($: any): Promise<string> {
 /** A plan's steps as the board shows them: the review step for a risky plan, then the smoke test for one that changes code. */
 const planSteps = (plan: Plan) => L.withSmokeTask(L.withReviewTask(plan.tasks, plan, opt('freshReview', 1) > 0), plan.code, isUnity && plan.csharp === true)
 
+/** The person's rules, memory and instruction files for the planner, read fresh so a line saved a minute ago counts. */
+async function plannerKnown($: any): Promise<string> {
+  const files = [
+    { label: 'Command Deck rules', text: await rulesText($) },
+    { label: 'Command Deck project memory', text: await readFile($, memoryFile()) },
+    { label: 'Command Deck conventions', text: await readFile($, `${DIR}/conventions.md`) },
+  ]
+  try {
+    // the files the chat itself was given (CLAUDE.md, rules, the auto-memory index), by the engine's own list
+    const u = await $.session.usage({ breakdown: 'summary' })
+    for (const f of u?.context?.breakdown?.memoryFiles ?? []) files.push({ label: `${f.type}: ${String(f.path).split('/').pop()}`, text: await readFile($, String(f.path)) })
+  } catch {
+    /* the deck's own files still go */
+  }
+  return L.plannerKnown(files)
+}
+
 async function analyze($: any, ask: string, answers: string[], questions: string[] = [], media = 0): Promise<Plan | null> {
+  const known = await plannerKnown($)
   for (const model of ['haiku', 'sonnet']) {
     const r = await $.model.complete({
       model,
       system: L.PLANNER_SYSTEM,
-      prompt: L.plannerPrompt(ask, answers, questions, recent, media),
+      prompt: L.plannerPrompt(ask, answers, questions, recent, media, known),
       maxTokens: 1500,
       effort: model === 'haiku' ? 'medium' : 'low',
       // the message waits for this call, so a slow planner is cut short and the message goes out unplanned
@@ -737,6 +760,66 @@ async function judgeBoard($: any, answer: string, open: Task[]): Promise<void> {
   } catch (err) {
     $.ui.log(`[command-deck] board judge failed: ${String((err as Error)?.message ?? err)}`)
   }
+}
+
+/**
+ * After a main turn's answer: keeps the answer in the run's notes, then sends the next message itself when cards are
+ * open and nothing waits on the person, or asks for one final report when a run of its own sends ends.
+ */
+async function carryOn($: any, answer: string, closed: string[]) {
+  const mine = run
+  if (mine.isOver) return
+  const wasWrapUp = mine.isWrapUp
+  mine.isWrapUp = false
+  const all = await read($, tasksA)
+  // a chat with no board is a talk, not a run
+  if (!all.length && !mine.sent) return
+  const now = await $.clock.now()
+  mine.steps += 1
+  if (!mine.notes) mine.notes = `${DIR}/run-${L.stamp(now)}.md`
+  const head = `# Command Deck run ${new Date(now).toISOString().slice(0, 10)}\n\n`
+  const prev = (await readFile($, mine.notes)) || head
+  await $.fs.write(mine.notes, prev + L.runNote(mine.steps, new Date(now).toISOString().slice(11, 16), closed, answer)).catch(() => undefined)
+  if (wasWrapUp) {
+    mine.isOver = true
+    return
+  }
+  const open = all.filter(t => t.status === 'todo')
+  if (mine.sent) mine.stalled = open.length >= mine.open ? mine.stalled + 1 : 0
+  mine.open = open.length
+  const limits = await read($, limitsA)
+  const savePct = opt('saveModePct', 80)
+  const max = opt('autoContinueMax', 8)
+  const isBusy = () => run !== mine || isTurnLive || isRunning || isCompacting || agentTask.size > 0
+  let why = L.continueBlock({
+    open: open.length,
+    sent: mine.sent,
+    max,
+    stalled: mine.stalled,
+    isSaving: savePct > 0 && Math.max(limits.fiveHour?.pct ?? 0, limits.sevenDay?.pct ?? 0) >= savePct,
+    isBusy: isBusy(),
+  })
+  if (!why) {
+    const r = await $.model.complete({ model: 'haiku', system: L.CONTINUE_SYSTEM, prompt: L.judgePrompt(answer, open), maxTokens: 120, effort: 'low', timeoutMs: 30000 })
+    if (r.isAnswered) await addUsage($, 'haiku', { ...r.usage, model: 'haiku' })
+    const verdict = r.isAnswered ? L.parseContinue(r.text) : { go: false, why: 'no verdict' }
+    // the person typed, or other work began, while the judge read: this turn's verdict is stale
+    if (isBusy()) return
+    if (verdict.go) {
+      mine.sent += 1
+      $.ui.toast(`Carrying on by itself (${mine.sent}/${max}): ${open.length} card${open.length === 1 ? '' : 's'} left.`)
+      await $.prompt.submit({ text: L.continuePrompt(open.map(t => t.title), mine.notes, mine.sent, max) }).catch(() => undefined)
+      return
+    }
+    why = verdict.why || 'waits on you'
+  }
+  // other work is still going: its own turn end comes back here
+  if (isBusy()) return
+  // one answer is its own report; only a run of the deck's own sends gets one written from the notes
+  if (!mine.sent) return
+  mine.isWrapUp = true
+  $.ui.toast(`Run stopped: ${why}. Writing the final report.`)
+  await $.prompt.submit({ text: L.wrapUpPrompt(mine.notes, why) }).catch(() => undefined)
 }
 
 const planText = (plan: Plan, tasks: Task[]): string =>
@@ -1431,6 +1514,7 @@ export const register: Register = (on, options) => {
     if (HUMAN.has(String(e.origin?.kind)) && !e.text.startsWith('/')) {
       // a typed message is a new request: the failure it has not seen rides along, and the send count starts over
       verifySends = 0
+      run = newRun()
       if (verifyNote) added.push(verifyNote)
       verifyNote = ''
       // a correction may hold a rule worth keeping: the pane offers it, the person decides
@@ -1737,7 +1821,10 @@ export const register: Register = (on, options) => {
       // in the background: the answer is already on screen, and a slow or failed call only leaves the cards as they were
       const answer = String((e as { answer?: string }).answer ?? '')
       // an empty answer (a tool-only turn) settles nothing, so the judge is not called
-      if (open.length && answer.trim() && (e as { reason?: string }).reason === 'answer' && opt('judgeBoard', 1) > 0) void judgeBoard($, answer, open)
+      const isAnswer = Boolean(answer.trim()) && (e as { reason?: string }).reason === 'answer'
+      const judged = open.length && isAnswer && opt('judgeBoard', 1) > 0 ? judgeBoard($, answer, open) : Promise.resolve()
+      // after the judge, so the cards it closes are not sent out as work still to do
+      if (isAnswer && opt('autoContinue', 1) > 0) void judged.then(() => carryOn($, answer, marks.done)).catch(err => $.ui.log(`[command-deck] carry on failed: ${String((err as Error)?.message ?? err)}`))
     }
     if (!e.agentId && usage && L.toolAvailable('ponytail', undefined, undefined, 0, (await read($, limitsA)).skills)) {
       await addSaving('ponytail', L.cavemanSaved(usage.output_tokens ?? 0, opt('ponytailRatio', 0.45)), $)

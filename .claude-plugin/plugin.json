@@ -1,6 +1,6 @@
 {
   "name": "command-deck",
-  "version": "1.7.0",
+  "version": "1.8.0",
   "icon": "./.claude-plugin/icon.png",
   "description": "Plan with the right model and effort per task, verify gate, Unity compile gate, kanban board, usage and git panel, caveman mode, handoff and project memory.",
   "types": "./types/index.d.ts",
@@ -58,6 +58,18 @@
       "title": "Plan review on risky plans (1 on, 0 off)",
       "description": "A plan that is big, hard or touches something costly to get wrong starts with a step where a subagent reads the brief and the steps, before any code is written.",
       "default": 1
+    },
+    "autoContinue": {
+      "type": "number",
+      "title": "Carry on by itself while cards are open (1 on, 0 off)",
+      "description": "When a turn ends with open cards and nothing in the answer waits on you, the deck sends the next step itself, keeps each answer in .claude/deck/run-<time>.md and ends the run with one final report. It stops for a question, a blocker, anything that goes live or cannot be undone, save mode, and after autoContinueMax steps.",
+      "default": 1
+    },
+    "autoContinueMax": {
+      "type": "number",
+      "title": "Most automatic steps per typed message",
+      "description": "The deck sends at most this many steps by itself for one message you typed. Typing a message starts the count over.",
+      "default": 8
     },
     "learnRules": {
       "type": "number",

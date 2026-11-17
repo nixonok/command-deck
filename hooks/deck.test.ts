@@ -1621,3 +1621,90 @@ test('dead weight: idle skills and servers are left out when a chat starts, neve
   expect(await listing()).toBe('- gsap-core: GSAP\n- remotion-render: Export a video\n- docx: Word files')
   expect(await isBehindSearch('mcp__easel__chart')).toBe(false)
 })
+
+test('planner context: the person\'s rules and memory ride in the planner prompt, cut to size', () => {
+  const known = L.plannerKnown([
+    { label: 'AutoMem: MEMORY.md', text: '- User always uses Gemini/ChatGPT for images and UI mockups' },
+    { label: 'Command Deck conventions', text: '   ' },
+    { label: 'Project: CLAUDE.md', text: 'x'.repeat(20000) },
+  ])
+  expect(known).toContain('[AutoMem: MEMORY.md]\n- User always uses Gemini/ChatGPT')
+  expect(known).not.toContain('conventions') // an empty file is left out
+  expect(known.length).toBeLessThan(14001)
+  const p = L.plannerPrompt('redo the lobby art', [], [], [], 0, known)
+  expect(p).toContain('Known about this person and project')
+  expect(p).toContain('Gemini/ChatGPT')
+  expect(L.plannerPrompt('redo the lobby art', [])).not.toContain('Known about')
+  expect(L.PLANNER_SYSTEM).toContain('never write that it cannot be used')
+})
+
+test('learn rules: a stated habit is offered like a correction', () => {
+  expect(L.isCorrection('I always use Gemini or ChatGPT for images and UI mockups')).toBe(true)
+  expect(L.isCorrection('Keep in mind the relay runs on port 5080')).toBe(true)
+  expect(L.isCorrection('Add a settings row that shows the build number')).toBe(false)
+})
+
+test('carry on: the gate stops at the cap, on a stall, in save mode, and a broken verdict never goes', () => {
+  const ok = { open: 2, sent: 1, max: 8, stalled: 0, isSaving: false, isBusy: false }
+  expect(L.continueBlock(ok)).toBe('')
+  expect(L.continueBlock({ ...ok, open: 0 })).toBe('board empty')
+  expect(L.continueBlock({ ...ok, sent: 8 })).toContain('8 automatic steps')
+  expect(L.continueBlock({ ...ok, stalled: 2 })).toContain('closed no card')
+  expect(L.continueBlock({ ...ok, isSaving: true })).toContain('usage limit')
+  expect(L.continueBlock({ ...ok, isBusy: true })).toContain('still running')
+  expect(L.parseContinue('{"go":true,"why":"next card is plain"}')).toEqual({ go: true, why: 'next card is plain' })
+  expect(L.parseContinue('{"go":"yes"}').go).toBe(false)
+  expect(L.parseContinue('go on').go).toBe(false)
+  expect(L.parseContinue(undefined).go).toBe(false)
+  expect(L.continuePrompt(['Wire pause button'], '/p/run.md', 2, 8)).toContain('- Wire pause button')
+  expect(L.continuePrompt(['Wire pause button'], '/p/run.md', 2, 8)).toContain('Stop and ask before anything that pushes')
+  expect(L.wrapUpPrompt('/p/run.md', 'waits on you')).toContain('Needs you')
+  expect(L.runNote(2, '10:05', ['Add test'], 'Did it.')).toBe('## Step 2 (10:05)\nClosed: Add test\n\nDid it.\n\n')
+})
+
+test('carry on: open cards and a go verdict send the next step; a stop after that asks for one final report', async ($, on) => {
+  mock.clock(on, { now: 1_791_868_793_562 })
+  mock.store(on, { 'deck.tasks': [card(1, 'Add pause button'), card(2, 'Wire pause to GameManager')] })
+  on('session.start', () => ({ cwd: '/tmp/x' }) as any)
+  on('command.register', () => ({ value: undefined }) as any)
+  on('ui.open', () => ({ value: undefined }) as any)
+  on('ui.toast', () => ({ value: undefined }) as any)
+  on('process.run', () => ({ value: { stdout: '', stderr: '', code: 1 } }) as any)
+  on('session.usage', () => ({ value: undefined }) as any)
+  const files: Record<string, string> = {}
+  on('fs.write', (_$: any, e: any) => {
+    files[String(e.path)] = String(e.content ?? e.text ?? '')
+    return { value: undefined } as any
+  })
+  on('fs.exists', () => ({ value: false }) as any)
+  on('turn.complete', () => ({ text: '' }) as any)
+  const sent: string[] = []
+  on('prompt.submit', (_$: any, e: any) => {
+    sent.push(String(e.text))
+    return { drop: 'held by the test' } as any
+  })
+  let verdict = '{"go":true,"why":"next card plain"}'
+  on('model.complete', (_$: any, e: any) => ({ value: { isAnswered: true, text: String(e.system).startsWith('You decide') ? verdict : '{"done":[],"skip":[]}', usage: { input_tokens: 10, output_tokens: 5 } } }) as any)
+  await $.session.start({ cwd: '/tmp/x', surface: null, isInteractive: false } as any)
+  await $.turn.complete({ answer: 'Button added.\nDone: Add pause button', reason: 'answer' } as any)
+  await new Promise(r => setTimeout(r, 30))
+  expect(sent.length).toBe(1)
+  expect(sent[0]).toContain('automatic step 1 of 8')
+  expect(sent[0]).toContain('- Wire pause to GameManager')
+  expect(sent[0]).not.toContain('- Add pause button')
+  const notes = Object.keys(files).find(p => /\/run-\d+\.md$/.test(p))!
+  expect(files[notes]).toContain('Closed: Add pause button')
+  // the next answer asks the person something: no further step, one final report
+  verdict = '{"go":false,"why":"asks which scene"}'
+  await $.turn.complete({ answer: 'Which scene holds the HUD?', reason: 'answer' } as any)
+  await new Promise(r => setTimeout(r, 30))
+  expect(sent.length).toBe(2)
+  expect(sent[1]).toContain('the run stopped (asks which scene)')
+  // the report itself ends the run: nothing more is sent
+  verdict = '{"go":true,"why":"x"}'
+  await $.turn.complete({ answer: 'Final report. Needs you: which scene?', reason: 'answer' } as any)
+  await new Promise(r => setTimeout(r, 30))
+  expect(sent.length).toBe(2)
+  expect(files[notes]).toContain('## Step 3')
+})
+

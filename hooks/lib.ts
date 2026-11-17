@@ -40,7 +40,8 @@ Rules:
 - A request that points back at the chat ("fix it", "do that", "the fixes above", "fix the X") means the work the last Assistant message proposed or named; plan exactly that. If the cut chat lines do not show what it means, keep the person's own words in "prompt" and plan one sonnet step; never invent a different task.
 - Default to isClear=true. Read "Recent conversation" and "Questions already asked and the answers" first: they are the person's own words and count as answers, even short ones like "yes", "both" or "all three" (they answer the question just before them). Never ask again anything already answered or implied there.
 - isClear=false only when one missing fact would change the work (target file, behaviour, scope, platform) and no sensible default exists. Then give at most 2 short, concrete questions and leave tasks empty. When the request is clear enough, skip questions and state any assumption inside "prompt".
-- Never ask what the project files, git history or the conversation can answer. A thing you cannot open (a web page behind a login) is not a question: plan around local files and config instead.
+- Never ask what the project files, git history or the conversation can answer. A thing you cannot open (a web page behind a login) is not a question: plan the step with the tools the notes name, else around local files and config.
+- "Known about this person and project" holds their rules, tools and habits. Plan with them and never ask what they answer. A tool or site they say the person uses (a signed-in browser, an image or design tool, an editor bridge) is there to use: never write that it cannot be used, and never plan around it.
 - Work is in the project folder named in the request (code, editor tooling, or a Claude mod); do not assume a web app, browser or database unless the request says so.
 - prompt: the request rewritten for an AI coding agent: goal, constraints, files or areas, definition of done, how to verify. Caveman style: short blunt sentences, no filler or articles, but keep every file name, number and rule exact so the task is clear at a glance. Under 140 words.
 - tasks: 1-8 small steps in execution order. Pick the cheapest tier that will still be right:
@@ -55,7 +56,7 @@ Rules:
 - effort: how hard the main model must think for the whole request, judged by scope, not topic. low = an answer or a pick that needs no tools and no planning. medium = one known place, cause known. high = several files, an unknown cause, or a review of much code. xhigh = architecture, concurrency, security, a migration, or a retry after a failed attempt. A "yes" or "option B" that starts a build is judged as that build.
 - parallel=true only when the task edits different files from the tasks next to it and needs nothing they produce; those run at the same time. Split mechanical edits per file so they can run in parallel on Haiku.`
 
-export function plannerPrompt(ask: string, answers: string[], questions: string[] = [], recent: string[] = [], media = 0): string {
+export function plannerPrompt(ask: string, answers: string[], questions: string[] = [], recent: string[] = [], media = 0, known = ''): string {
   const chat = recent.length ? `\n\nRecent conversation (oldest first):\n${recent.map(r => `- ${r}`).join('\n')}` : ''
   const qa = questions.length
     ? `\n\nQuestions already asked and the answers (the answers below were sent in order, each one after the questions):\n${questions.map((q, i) => `- Q${i + 1}: ${q}`).join('\n')}\n${answers.map(a => `- Answer: ${a}`).join('\n')}`
@@ -65,7 +66,18 @@ export function plannerPrompt(ask: string, answers: string[], questions: string[
   const seen = media > 0
     ? `\n\nThe person attached ${media} image(s) or file(s) you cannot see; the agent doing the work sees them. Assume they show whatever the request points at (layout, text, the wanted result): never ask about them or about anything they could answer.`
     : ''
-  return `Request:\n${ask}${seen}${chat}${qa}`
+  const notes = known.trim() ? `\n\nKnown about this person and project (their own rules, memory and instruction files):\n${known.trim()}` : ''
+  return `Request:\n${ask}${seen}${chat}${qa}${notes}`
+}
+
+/**
+ * What the planner is told about the person and project. The planner is a separate cheap call that sees none of the
+ * chat's instruction files, so without this it plans against what the person has already said they use.
+ * Contract: empty files are left out, each is cut to `each` characters and the whole to `max`.
+ */
+export function plannerKnown(files: { label: string; text: string }[], each = 9000, max = 14000): string {
+  const parts = files.filter(f => f.text.trim()).map(f => `[${f.label}]\n${clip(f.text.trim(), each)}`)
+  return clip(parts.join('\n\n'), max)
 }
 
 /**
@@ -986,7 +998,8 @@ export const guardDeny = (g: Guard): string => `Blocked by this project's guard 
 // A message that corrects the model may hold a lasting rule. The words only hint at it: nothing is kept until the
 // person presses Save in the pane, and what is kept is theirs to edit (.claude/deck/conventions.md).
 const CORRECTION_START = /^(no\b|nope\b|wrong\b|not (like )?(that|this)\b|don'?t\b|do not\b|never\b|always\b|stop\b|i (said|told you|asked)\b|that'?s (not|wrong)\b|you (forgot|missed|ignored|broke|should(n'?t)?|must)\b|why did you\b)/i
-const CORRECTION_ANY = /\b(from now on|next time|in future|not what i asked|i (already )?(said|told you)|as i said)\b/i
+// a stated habit ("I always use X for Y") is kept the same way a correction is
+const CORRECTION_ANY = /\b(from now on|next time|in future|not what i asked|i (already )?(said|told you)|as i said|i (always|never|only) [a-z]+|i prefer\b|remember (that|this)|keep in mind)\b/i
 /** True when a typed message reads like a correction: short, not a command, and worded as one. A hint, never proof. */
 export function isCorrection(text: string): boolean {
   const t = text.trim()
@@ -1241,3 +1254,60 @@ export function parseJudge(raw: string, cards: Task[]): { todo: string[]; done: 
 
 /** The card status a TaskUpdate status means (`deleted` and unknown values change nothing). */
 export const statusOfTask = (status: unknown): Status | undefined => TODO_STATUS[String(status)]
+
+// ------------------------------------------------------------ carry on
+// Contract: when a turn ends with open cards and nothing waits on the person, the deck sends the next message itself.
+// Invariants: never past `max` sends for one typed request, never after two sends that closed no card, never in save
+// mode, never while other work runs; a typed message starts the count over. Each turn's answer is kept in a notes
+// file, and the run ends with one report written from it.
+export const CONTINUE_SYSTEM = `You decide whether an AI coding agent that just stopped should keep going without its person. You get its final answer and the board's open cards (one per line, "id: title").
+Return ONLY one JSON object, no prose: {"go":boolean,"why":string}
+- go=true only when the open cards name work that is left, the next step is plain from the answer and the cards, and nothing in the answer waits on the person.
+- go=false when the answer asks the person anything, offers a choice, waits for a yes, needs something only they can do or give (a login, a password, a screenshot, a device, a decision), or reports a blocker it could not get past.
+- go=false when the next step would push, publish, release, send, delete, pay, or otherwise go live or be hard to undo, unless the person already asked for exactly that.
+- go=false when the open cards are checks only the person can make, and whenever unsure.
+- why: 8 words or fewer.`
+
+/** The judge's reply; a broken or missing reply stops the run. */
+export function parseContinue(raw: unknown): { go: boolean; why: string } {
+  const text = String(raw ?? '')
+  const start = text.indexOf('{')
+  const end = text.lastIndexOf('}')
+  if (start < 0 || end <= start) return { go: false, why: 'no verdict' }
+  try {
+    const data = JSON.parse(text.slice(start, end + 1))
+    return { go: data?.go === true, why: clip(String(data?.why ?? ''), 80) }
+  } catch {
+    return { go: false, why: 'no verdict' }
+  }
+}
+
+/** Why the deck may not send the next message itself, or '' when it may ask the judge. */
+export function continueBlock(a: { open: number; sent: number; max: number; stalled: number; isSaving: boolean; isBusy: boolean }): string {
+  if (!a.open) return 'board empty'
+  if (a.isBusy) return 'other work still running'
+  if (a.sent >= a.max) return `${a.max} automatic steps reached`
+  if (a.stalled >= 2) return 'two steps closed no card'
+  if (a.isSaving) return 'usage limit near'
+  return ''
+}
+
+export const continuePrompt = (open: string[], notes: string, n: number, max: number): string =>
+  [
+    `Command Deck (automatic step ${n} of ${max}): nothing in your last answer waits on the person, so carry on with the open cards:`,
+    ...open.map(t => `- ${t}`),
+    'Work through as many as you can in this turn. End with a "Done: <title>" line for each card finished and "Skip: <title>" for each dropped on purpose.',
+    'Stop and ask before anything that pushes, publishes, releases, sends, deletes, pays or cannot be undone, and when only the person can answer.',
+    `Your earlier answers in this run are kept in ${notes}; do not repeat them.`,
+  ].join('\n')
+
+export const wrapUpPrompt = (notes: string, why: string): string =>
+  [
+    `Command Deck: the run stopped (${why}). Write one final report for the whole run, not only the last step. The answer of each step is in ${notes}; read it if any is no longer in view.`,
+    'Sections, in this order, each left out when empty: Done (what changed, with files). Checked (what was run and what it showed). Not checked. Needs you (every open question or decision, in full, and each thing only the person can do). Left (open cards and why).',
+    'Do no new work in this turn.',
+  ].join('\n')
+
+/** One turn's answer as a section of the run's notes file. */
+export const runNote = (n: number, at: string, closed: string[], answer: string): string =>
+  `## Step ${n} (${at})${closed.length ? `\nClosed: ${closed.join('; ')}` : ''}\n\n${clip(answer.trim(), 6000)}\n\n`
