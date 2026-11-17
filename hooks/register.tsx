@@ -741,19 +741,25 @@ async function analyze($: any, ask: string, answers: string[], questions: string
   return null
 }
 
-/** Closes the open cards the turn's answer settles, when the main chat left out its Done:/Skip: lines. */
+/** Makes the board follow the turn's answer: closes the cards it settles, adds the work it says is left. */
 async function judgeBoard($: any, answer: string, open: Task[]): Promise<void> {
   try {
-    const r = await $.model.complete({ model: 'haiku', system: L.JUDGE_SYSTEM, prompt: L.judgePrompt(answer, open), maxTokens: 200, effort: 'low', timeoutMs: 30000 })
+    const r = await $.model.complete({ model: 'haiku', system: L.JUDGE_SYSTEM, prompt: L.judgePrompt(answer, open), maxTokens: 300, effort: 'low', timeoutMs: 30000 })
     if (!r.isAnswered) return
     await addUsage($, 'haiku', { ...r.usage, model: 'haiku' })
     const marks = L.parseJudge(r.text, open)
-    if (!marks.done.length && !marks.skip.length) return
+    if (!marks.done.length && !marks.skip.length && !marks.todo.length) return
     const now = await $.clock.now()
     // only the same cards, still in Todo: a new plan reuses ids, and a subagent may have picked one up meanwhile
     const asked = (t: Task) => t.status === 'todo' && open.some(o => o.id === t.id && o.title === t.title)
     await update($, tasksA, (l: Task[]) =>
-      l.map(t => (!asked(t) ? t : marks.done.includes(t.title) ? L.setCard(t, 'done', now) : marks.skip.includes(t.title) ? L.setCard(t, 'skipped', now) : t)),
+      L.applyMarks(
+        l.map(t => (!asked(t) ? t : marks.done.includes(t.title) ? L.setCard(t, 'done', now) : marks.skip.includes(t.title) ? L.setCard(t, 'skipped', now) : t)),
+        // new cards only on the board the judge read (a new plan may have replaced it meanwhile), and never in a
+        // run of the deck's own sends, which must not grow its own work list
+        { todo: run.sent || !l.some(t => open.some(o => o.id === t.id && o.title === t.title)) ? [] : marks.todo, done: [] },
+        now,
+      ),
     )
     if (!(await read($, tasksA)).some(t => t.status === 'todo')) isAutoBoard = false
     await save($)

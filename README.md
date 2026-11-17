@@ -169,7 +169,7 @@ Change a value in any of these ways:
 | `handoffTurns` | 12 | Suggest a handoff after this many prompts. |
 | `plannerChatMessages` | 5 | Latest chat messages the planner reads. 0 sends none. |
 | `plannerChatChars` | 500 | Characters kept per message sent to the planner. |
-| `judgeBoard` | 1 | After each answer, Haiku closes the TODO cards the answer settles. 0 is off. |
+| `judgeBoard` | 1 | After each answer, Haiku closes the TODO cards the answer settles, drops the cards of a plan the answer did not follow, and adds up to 3 cards for work the answer says is left. 0 is off. |
 | `autoStart` | 1 | Open the pane in every new chat. |
 | `caveman` | 1 | Short blunt replies in every chat. 0 is off. |
 | `autoEffort` | 1 | Effort routing: 0 off, 1 only lowers (never above your own `/effort` level), 2 may also raise. |

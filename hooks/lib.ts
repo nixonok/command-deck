@@ -1225,13 +1225,15 @@ export function applyMarks(tasks: Task[], marks: { todo: string[]; done: string[
   return out
 }
 
-// the main chat often forgets its Done:/Skip: lines, so a cheap model reads the answer and closes the cards it settles
+// the main chat often forgets its Done:/Skip: lines, or does other work than the plan named, so a cheap model reads
+// the answer, closes the cards it settles and adds the work it says is left: the board follows what was done
 export const JUDGE_SYSTEM = `You keep a task board true. You get the assistant's final answer and the open cards (one per line, "id: title").
-Return ONLY one JSON object, no prose: {"done":number[],"skip":number[]}
+Return ONLY one JSON object, no prose: {"done":number[],"skip":number[],"todo":string[]}
 - done: the answer says this card's work is finished (done, fixed, pushed, deployed, verified, answered).
 - skip: the answer says this card's work was not done and is not being done now (blocked, denied, dropped, left to the person, not needed).
 - skip too: the answer says it took the request to mean other work than a card names, and did that other work instead. Such a card belongs to a plan the answer did not follow.
-- Leave out any card the answer does not settle, or that work still running will settle. When unsure, leave it out.`
+- Leave out any card the answer does not settle, or that work still running will settle. When unsure, leave it out.
+- todo: work the answer says the assistant itself still has to do and no open card names. At most 3 titles, each under 9 plain words. Never what only the person can do, what is already done, or what the answer merely offers. Most answers leave this empty.`
 
 export const judgePrompt = (answer: string, cards: Task[]): string =>
   `Open cards:\n${cards.map(t => `${t.id}: ${t.title}`).join('\n')}\n\nFinal answer:\n${answer.slice(-6000)}`
@@ -1247,6 +1249,9 @@ export function parseJudge(raw: string, cards: Task[]): { todo: string[]; done: 
     const titles = (ids: unknown) => (Array.isArray(ids) ? cards.filter(c => ids.includes(c.id)).map(c => c.title) : [])
     out.done = titles(data?.done)
     out.skip = titles(data?.skip).filter(t => !out.done.includes(t))
+    // new cards: real titles only, never one the board already has, never a flood
+    const fresh = Array.isArray(data?.todo) ? data.todo.filter((t: unknown): t is string => typeof t === 'string' && Boolean(t.trim())).map((t: string) => clip(t.trim(), 80)) : []
+    out.todo = fresh.filter((t: string, i: number) => fresh.indexOf(t) === i && !cards.some(c => sameTitle(c.title, t))).slice(0, 3)
   } catch {
     // not JSON: nothing is marked, the cards stay as they are
   }
