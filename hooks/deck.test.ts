@@ -19,6 +19,8 @@ test('parseJudge: closes only the asked cards, done wins over skip, junk marks n
   expect(L.parseJudge('no json here', open)).toEqual({ todo: [], done: [], skip: [] })
   expect(L.parseJudge('{broken', open)).toEqual({ todo: [], done: [], skip: [] })
   expect(L.judgePrompt('All pushed.', open)).toContain('2: Smoke test prod /ws and /live')
+  // a plan the answer did not follow: its cards are skipped, not left as work to do
+  expect(L.JUDGE_SYSTEM).toContain('took the request to mean other work')
 })
 
 test('routing: mechanical work goes to Haiku, risky work to Opus, the rest to Sonnet', () => {
@@ -1708,3 +1710,31 @@ test('carry on: open cards and a go verdict send the next step; a stop after tha
   expect(files[notes]).toContain('## Step 3')
 })
 
+
+test('carry on: an answer that waits on the person sends nothing and leaves no notes file', async ($, on) => {
+  mock.clock(on, { now: 1_791_868_793_562 })
+  mock.store(on, { 'deck.tasks': [card(1, 'Add pause button')] })
+  on('session.start', () => ({ cwd: '/tmp/x' }) as any)
+  on('command.register', () => ({ value: undefined }) as any)
+  on('ui.open', () => ({ value: undefined }) as any)
+  on('process.run', () => ({ value: { stdout: '', stderr: '', code: 1 } }) as any)
+  on('session.usage', () => ({ value: undefined }) as any)
+  const written: string[] = []
+  on('fs.write', (_$: any, e: any) => {
+    written.push(String(e.path))
+    return { value: undefined } as any
+  })
+  on('fs.exists', () => ({ value: false }) as any)
+  on('turn.complete', () => ({ text: '' }) as any)
+  let sent = 0
+  on('prompt.submit', () => {
+    sent += 1
+    return { drop: 'held by the test' } as any
+  })
+  on('model.complete', (_$: any, e: any) => ({ value: { isAnswered: true, text: String(e.system).startsWith('You decide') ? '{"go":false,"why":"asks which scene"}' : '{"done":[],"skip":[]}', usage: { input_tokens: 10, output_tokens: 5 } } }) as any)
+  await $.session.start({ cwd: '/tmp/x', surface: null, isInteractive: false } as any)
+  await $.turn.complete({ answer: 'Which scene holds the HUD?', reason: 'answer' } as any)
+  await new Promise(r => setTimeout(r, 30))
+  expect(sent).toBe(0)
+  expect(written.some(p => /\/run-\d+\.md$/.test(p))).toBe(false)
+})

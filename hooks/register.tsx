@@ -64,8 +64,9 @@ let isFreshDue = false
 let lastAnswer = ''
 // carry on: the deck's own sends since the last typed message, the open cards at the last send, and the run's notes
 // file; a typed message starts a new one (the object is replaced, so work begun for the old run can tell it is stale)
-type Run = { sent: number; stalled: number; open: number; steps: number; notes: string; isWrapUp: boolean; isOver: boolean }
-const newRun = (): Run => ({ sent: 0, stalled: 0, open: 0, steps: 0, notes: '', isWrapUp: false, isOver: false })
+// `held` is the notes not yet on disk: a file is written only for a run the deck itself carried on
+type Run = { sent: number; stalled: number; open: number; steps: number; notes: string; held: string; isWrapUp: boolean; isOver: boolean }
+const newRun = (): Run => ({ sent: 0, stalled: 0, open: 0, steps: 0, notes: '', held: '', isWrapUp: false, isOver: false })
 let run = newRun()
 // prompt cache: estimated from the clock (the server is never asked), see lib.ts coldCheck
 let lastTouch = 0
@@ -777,9 +778,14 @@ async function carryOn($: any, answer: string, closed: string[]) {
   const now = await $.clock.now()
   mine.steps += 1
   if (!mine.notes) mine.notes = `${DIR}/run-${L.stamp(now)}.md`
-  const head = `# Command Deck run ${new Date(now).toISOString().slice(0, 10)}\n\n`
-  const prev = (await readFile($, mine.notes)) || head
-  await $.fs.write(mine.notes, prev + L.runNote(mine.steps, new Date(now).toISOString().slice(11, 16), closed, answer)).catch(() => undefined)
+  mine.held += L.runNote(mine.steps, new Date(now).toISOString().slice(11, 16), closed, answer)
+  // one answer needs no file: the notes reach disk from the deck's first own send on
+  const flush = async () => {
+    const prev = (await readFile($, mine.notes)) || `# Command Deck run ${new Date(now).toISOString().slice(0, 10)}\n\n`
+    await $.fs.write(mine.notes, prev + mine.held).catch(() => undefined)
+    mine.held = ''
+  }
+  if (mine.sent) await flush()
   if (wasWrapUp) {
     mine.isOver = true
     return
@@ -807,6 +813,7 @@ async function carryOn($: any, answer: string, closed: string[]) {
     if (isBusy()) return
     if (verdict.go) {
       mine.sent += 1
+      await flush()
       $.ui.toast(`Carrying on by itself (${mine.sent}/${max}): ${open.length} card${open.length === 1 ? '' : 's'} left.`)
       await $.prompt.submit({ text: L.continuePrompt(open.map(t => t.title), mine.notes, mine.sent, max) }).catch(() => undefined)
       return

@@ -1230,6 +1230,7 @@ export const JUDGE_SYSTEM = `You keep a task board true. You get the assistant's
 Return ONLY one JSON object, no prose: {"done":number[],"skip":number[]}
 - done: the answer says this card's work is finished (done, fixed, pushed, deployed, verified, answered).
 - skip: the answer says this card's work was not done and is not being done now (blocked, denied, dropped, left to the person, not needed).
+- skip too: the answer says it took the request to mean other work than a card names, and did that other work instead. Such a card belongs to a plan the answer did not follow.
 - Leave out any card the answer does not settle, or that work still running will settle. When unsure, leave it out.`
 
 export const judgePrompt = (answer: string, cards: Task[]): string =>
